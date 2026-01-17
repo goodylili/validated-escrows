@@ -24,13 +24,17 @@ const ENotParticipant: u64 = 3;
 const EAlreadyJoined: u64 = 4;
 const EBetExpired: u64 = 5;
 const ENotAllowed: u64 = 6;
-const EAlreadyResolved: u64 = 7;
 const ECannotLeave: u64 = 8;
 const ESelfNotAllowed: u64 = 9;
 const EInsufficientParticipants: u64 = 10;
 const EExpiryInPast: u64 = 11;
 const EExpiryTooSoon: u64 = 12;
 const ERevokedCap: u64 = 13;
+const ESelfRevocation: u64 = 14;
+const ETooManyReferences: u64 = 15;
+
+/// Maximum number of references allowed
+const MAX_REFERENCES: u64 = 20;
 
 // === Events ===
 
@@ -306,13 +310,15 @@ public(package) fun resolve(self: &mut Bet, winner: address, ctx: &TxContext) {
     });
 }
 
-/// Dissolve the bet (refund mode)
+/// Dissolve the bet (refund mode) - only works when bet is OPEN
+/// For locked bets that have expired, use force_dissolve_expired in terminal module
 public fun dissolve(self: &mut Bet, cap: &CreatorCap, ctx: &TxContext) {
     assert!(cap.bet_id == object::id(self), EInvalidCap);
     assert!(!self.revoked_creator_caps.contains(&object::id(cap)), ERevokedCap);
     assert!(self.participants.contains(cap.issued_to), ENotParticipant);
+    // Only OPEN bets can be dissolved via this function
+    // LOCKED bets must use force_dissolve_expired after expiry
     assert!(self.status == STATUS_OPEN, EBetLocked);
-    assert!(self.status != STATUS_RESOLVED && self.status != STATUS_DISSOLVED, EAlreadyResolved);
 
     self.status = STATUS_DISSOLVED;
 
@@ -367,11 +373,14 @@ public fun edit_terms(self: &mut Bet, cap: &CreatorCap, terms: String, ctx: &TxC
 }
 
 /// Add a reference URL
+/// SECURITY FIX: Limit number of references to prevent unbounded growth
 public fun add_reference(self: &mut Bet, cap: &CreatorCap, reference: String, ctx: &TxContext) {
     assert!(cap.bet_id == object::id(self), EInvalidCap);
     assert!(!self.revoked_creator_caps.contains(&object::id(cap)), ERevokedCap);
     assert!(self.participants.contains(cap.issued_to), ENotParticipant);
     assert!(self.status == STATUS_OPEN, EBetLocked);
+    // SECURITY FIX: Prevent unbounded vector growth
+    assert!(self.references.length() < MAX_REFERENCES, ETooManyReferences);
 
     self.references.push_back(reference);
 
@@ -424,10 +433,13 @@ public fun issue_creator_cap(self: &Bet, cap: &CreatorCap, recipient: address, c
 }
 
 /// Revoke a CreatorCap (only original creator can revoke)
+/// SECURITY FIX: Prevent self-revocation
 public fun revoke_creator_cap(self: &mut Bet, cap: &CreatorCap, cap_to_revoke: ID, ctx: &TxContext) {
     assert!(cap.bet_id == object::id(self), EInvalidCap);
     assert!(!self.revoked_creator_caps.contains(&object::id(cap)), ERevokedCap);
     assert!(ctx.sender() == self.creator, ENotAllowed);
+    // SECURITY FIX: Prevent revoking your own capability
+    assert!(object::id(cap) != cap_to_revoke, ESelfRevocation);
 
     if (!self.revoked_creator_caps.contains(&cap_to_revoke)) {
         self.revoked_creator_caps.insert(cap_to_revoke);

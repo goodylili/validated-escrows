@@ -322,7 +322,7 @@ public fun claim_nft_refund<T: key + store>(
 }
 
 /// Resolve bet after poll is resolved (validates bet/poll/vault linkage)
-/// SECURITY FIX: Added validation that poll outcome is present
+/// SECURITY FIX: Added validation that poll outcome is present and bet is locked
 public fun resolve_bet(
     bet: &mut Bet,
     poll: &Poll,
@@ -333,6 +333,8 @@ public fun resolve_bet(
     // Validate linkage between bet, poll, and vault
     assert!(bet::poll_id(bet) == poll::id(poll), EBetPollMismatch);
     assert!(bet::vault_id(bet) == vault::id(vault), EBetVaultMismatch);
+    // SECURITY FIX: Verify bet is in locked state before resolution
+    assert!(bet::is_locked(bet), EBetNotLocked);
     assert!(poll.is_resolved(), EPollNotResolved);
 
     // SECURITY FIX: Validate that outcome is present before borrowing

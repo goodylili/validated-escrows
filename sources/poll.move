@@ -13,6 +13,8 @@ const WITNESS_QUORUM_BPS: u64 = 6666;
 const BPS_DENOMINATOR: u64 = 10000;
 const MAX_WITNESS_COUNT: u64 = 10;
 const MAX_WITNESS_WEIGHT_BPS: u64 = 5000; // Max 50% weight for single witness
+const MAX_INITIAL_WITNESS_WEIGHT: u64 = 100; // Cap for first witness
+const MIN_TOTAL_WITNESS_WEIGHT: u64 = 3; // Minimum total weight for quorum calculation
 
 // === Error Codes ===
 
@@ -28,6 +30,7 @@ const EBetPollMismatch: u64 = 8;
 const ETooManyWitnesses: u64 = 9;
 const EWeightExceedsMax: u64 = 10;
 const ERevokedCap: u64 = 11;
+const EVotingAlreadyStarted: u64 = 12;
 
 // === Events ===
 
@@ -120,6 +123,10 @@ public struct Poll has key {
     witness_outcome_list: vector<address>,
     witness_count: u64,
     revoked_witness_caps: VecSet<ID>,
+    /// SECURITY FIX: Track the total witness weight when voting started
+    /// This prevents veto-based quorum manipulation where witnesses veto
+    /// to reduce total weight and make remaining votes reach quorum easier
+    locked_witness_weight: Option<u64>,
 }
 
 // === Public Functions ===
@@ -148,6 +155,7 @@ public fun new(
         witness_outcome_list: vector::empty(),
         witness_count: 0,
         revoked_witness_caps: vec_set::empty(),
+        locked_witness_weight: option::none(),
     };
 
     event::emit(PollCreated {
@@ -171,6 +179,7 @@ public(package) fun set_bet_id(self: &mut Poll, bet_id: ID) {
 }
 
 /// Add a witness with voting weight (only participants can add witnesses, and witness must be a participant)
+/// SECURITY FIX: Witnesses cannot be added after voting has started to prevent manipulation
 public(package) fun add_witness(
     self: &mut Poll,
     bet: &Bet,
@@ -186,16 +195,20 @@ public(package) fun add_witness(
     assert!(!self.witnesses.contains(witness), EWitnessAlreadyRegistered);
     assert!(weight > 0, EZeroWeight);
     assert!(self.witness_count < MAX_WITNESS_COUNT, ETooManyWitnesses);
-    
-    // Validate weight doesn't exceed max percentage of CURRENT total (not new total)
-    // This prevents manipulation where the first witness can claim unlimited weight
+
+    // SECURITY FIX: Prevent adding witnesses after voting has started
+    // This prevents strategic late additions after seeing vote distribution
+    assert!(self.participant_vote_count == 0 && self.voted_witness_weight == 0, EVotingAlreadyStarted);
+
+    // SECURITY FIX: Fair witness weight distribution
+    // All witnesses are capped at MAX_INITIAL_WITNESS_WEIGHT to prevent first-mover advantage
+    // After multiple witnesses exist, also enforce the 50% relative cap
+    assert!(weight <= MAX_INITIAL_WITNESS_WEIGHT, EWeightExceedsMax);
+
     if (self.total_witness_weight > 0) {
-        let max_individual_weight = (self.total_witness_weight * MAX_WITNESS_WEIGHT_BPS) / BPS_DENOMINATOR;
-        assert!(weight <= max_individual_weight, EWeightExceedsMax);
-    } else {
-        // For the first witness, cap at a reasonable initial weight (e.g., 100)
-        // This prevents a single witness from having all the voting power
-        assert!(weight <= 100, EWeightExceedsMax);
+        // Also enforce that no single witness can have more than 50% of existing total
+        let max_relative_weight = (self.total_witness_weight * MAX_WITNESS_WEIGHT_BPS) / BPS_DENOMINATOR;
+        assert!(weight <= max_relative_weight, EWeightExceedsMax);
     };
 
     self.witnesses.add(witness, weight);
@@ -259,6 +272,7 @@ public fun participant_vote(
 }
 
 /// Witness casts a vote (validates outcome is a bet participant)
+/// SECURITY FIX: Locks the total witness weight on first vote to prevent veto manipulation
 public fun witness_vote(
     self: &mut Poll,
     bet: &Bet,
@@ -273,6 +287,12 @@ public fun witness_vote(
     assert!(!self.revoked_witness_caps.contains(&object::id(cap)), ERevokedCap);
     assert!(bet::is_participant(bet, outcome), EInvalidOutcome);
     assert!(!self.witness_votes.contains(cap.witness), EAlreadyVoted);
+
+    // SECURITY FIX: Lock the total witness weight on first witness vote
+    // This prevents veto-based quorum manipulation
+    if (self.locked_witness_weight.is_none()) {
+        self.locked_witness_weight = option::some(self.total_witness_weight);
+    };
 
     let weight = cap.weight;
 
@@ -389,7 +409,17 @@ fun check_resolution(self: &mut Poll, _ctx: &mut TxContext) {
     };
 
     // Priority 2: Witness 66.66% quorum
-    if (self.total_witness_weight > 0 && self.witness_outcome_list.length() > 0) {
+    // SECURITY FIX: Use locked_witness_weight if set to prevent veto manipulation
+    // The locked weight is set when the first witness votes, ensuring that
+    // subsequent vetoes cannot reduce the denominator to game the quorum
+    let quorum_base_weight = if (self.locked_witness_weight.is_some()) {
+        *self.locked_witness_weight.borrow()
+    } else {
+        self.total_witness_weight
+    };
+
+    // SECURITY FIX: Require minimum total witness weight to prevent gaming with tiny weights
+    if (quorum_base_weight >= MIN_TOTAL_WITNESS_WEIGHT && self.witness_outcome_list.length() > 0) {
         let mut best_outcome = @0x0;
         let mut best_weight = 0u64;
         let mut i = 0;
@@ -406,7 +436,10 @@ fun check_resolution(self: &mut Poll, _ctx: &mut TxContext) {
         };
 
         if (best_weight > 0) {
-            let quorum_threshold = (self.total_witness_weight * WITNESS_QUORUM_BPS) / BPS_DENOMINATOR;
+            // SECURITY FIX: Use ceiling division to prevent rounding down to 0
+            // quorum_threshold = ceil((locked_total * 6666) / 10000)
+            let numerator = quorum_base_weight * WITNESS_QUORUM_BPS;
+            let quorum_threshold = (numerator + BPS_DENOMINATOR - 1) / BPS_DENOMINATOR;
 
             if (best_weight >= quorum_threshold) {
                 self.resolved = true;
@@ -486,3 +519,4 @@ public fun cap_weight(cap: &WitnessCap): u64 { cap.weight }
 public fun witness_quorum_bps(): u64 { WITNESS_QUORUM_BPS }
 public fun witness_count(self: &Poll): u64 { self.witness_count }
 public fun max_witness_count(): u64 { MAX_WITNESS_COUNT }
+public fun locked_witness_weight(self: &Poll): Option<u64> { self.locked_witness_weight }

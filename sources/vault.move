@@ -31,9 +31,15 @@ const ENftNotFound: u64 = 9;
 const EZeroDeposit: u64 = 10;
 const ESelfNotAllowed: u64 = 11;
 
+const EDepositTooSmall: u64 = 12;
 const ERevokedCap: u64 = 13;
 const ERevokedParticipant: u64 = 14;
 const EInvalidRecipient: u64 = 15;
+const ESelfRevocation: u64 = 16;
+const ENftTypeMismatch: u64 = 17;
+
+/// Minimum deposit amount to prevent dust attacks
+const MIN_DEPOSIT_AMOUNT: u64 = 1000; // Minimum 1000 units (adjust based on token decimals)
 
 // === Events ===
 
@@ -145,6 +151,12 @@ public struct ParticipantRegistered has copy, drop {
     participant: address,
 }
 
+public struct ParticipantRemoved has copy, drop {
+    vault_id: ID,
+    bet_id: ID,
+    participant: address,
+}
+
 // === Structs ===
 
 public struct VaultCap has key, store {
@@ -227,9 +239,16 @@ public(package) fun add_participant(self: &mut Vault, participant: address, _ctx
 }
 
 /// Remove an address from valid participants (called by bet module)
+/// SECURITY FIX: Emit event when participant is removed
 public(package) fun remove_participant(self: &mut Vault, participant: address) {
     if (self.participants.contains(participant)) {
         self.participants.remove(participant);
+
+        event::emit(ParticipantRemoved {
+            vault_id: object::id(self),
+            bet_id: self.bet_id,
+            participant,
+        });
     };
 }
 
@@ -243,18 +262,21 @@ public(package) fun revoke_participant(self: &mut Vault, participant: address) {
 // === Coin Functions ===
 
 /// Deposit coins into the vault (only registered participants can deposit)
+/// SECURITY FIX: Enforce minimum deposit to prevent dust attacks
 public fun deposit<T>(
     self: &mut Vault,
     coin: Coin<T>,
     ctx: &mut TxContext,
 ) {
     assert!(self.status == STATUS_OPEN, ENotOpen);
-    
+
     let sender = ctx.sender();
     assert!(self.participants.contains(sender), ENotParticipant);
 
     let amount = coin.value();
     assert!(amount > 0, EZeroDeposit);
+    // SECURITY FIX: Enforce minimum deposit amount to prevent dust attacks
+    assert!(amount >= MIN_DEPOSIT_AMOUNT, EDepositTooSmall);
     let type_name = std::type_name::into_string(std::type_name::with_original_ids<T>());
     let asset_type = type_name.to_string();
 
@@ -481,6 +503,7 @@ public fun deposit_nft<T: key + store>(
 }
 
 /// Claim NFT refund when vault is disbursed
+/// SECURITY FIX: Verify NFT type matches the deposited type
 public fun claim_nft_refund<T: key + store>(
     self: &mut Vault,
     object_id: ID,
@@ -498,12 +521,14 @@ public fun claim_nft_refund<T: key + store>(
     let mut found_idx: Option<u64> = option::none();
     let mut i = 0;
     let len = self.deposits.length();
-    
+
     while (i < len) {
         let entry = self.deposits.borrow(i);
-        if (entry.depositor == sender && 
-            entry.object_id.is_some() && 
+        if (entry.depositor == sender &&
+            entry.object_id.is_some() &&
             *entry.object_id.borrow() == object_id) {
+            // SECURITY FIX: Verify the type matches what was deposited
+            assert!(entry.asset_type == asset_type, ENftTypeMismatch);
             found_idx = option::some(i);
             break
         };
@@ -529,6 +554,7 @@ public fun claim_nft_refund<T: key + store>(
 }
 
 /// Withdraw NFT deposit when vault is open (for participants leaving the bet early)
+/// SECURITY FIX: Verify NFT type matches the deposited type
 public(package) fun withdraw_nft<T: key + store>(
     self: &mut Vault,
     depositor: address,
@@ -546,12 +572,14 @@ public(package) fun withdraw_nft<T: key + store>(
     let mut found_idx: Option<u64> = option::none();
     let mut i = 0;
     let len = self.deposits.length();
-    
+
     while (i < len) {
         let entry = self.deposits.borrow(i);
-        if (entry.depositor == depositor && 
-            entry.object_id.is_some() && 
+        if (entry.depositor == depositor &&
+            entry.object_id.is_some() &&
             *entry.object_id.borrow() == object_id) {
+            // SECURITY FIX: Verify the type matches what was deposited
+            assert!(entry.asset_type == asset_type, ENftTypeMismatch);
             found_idx = option::some(i);
             break
         };
@@ -579,6 +607,7 @@ public(package) fun withdraw_nft<T: key + store>(
 /// Claim NFT winnings when vault is resolved (winner claims specific NFT)
 /// SECURITY: Winner can only claim NFTs that were deposited in this vault
 /// The deposit entry must exist to prove the NFT was part of the bet
+/// SECURITY FIX: Verify NFT type matches the deposited type
 public fun claim_nft_winnings<T: key + store>(
     self: &mut Vault,
     object_id: ID,
@@ -602,6 +631,8 @@ public fun claim_nft_winnings<T: key + store>(
     while (i < len) {
         let entry = self.deposits.borrow(i);
         if (entry.object_id.is_some() && *entry.object_id.borrow() == object_id) {
+            // SECURITY FIX: Verify the type matches what was deposited
+            assert!(entry.asset_type == asset_type, ENftTypeMismatch);
             found_idx = option::some(i);
             break
         };
@@ -710,9 +741,12 @@ public fun issue_cap(self: &Vault, cap: &VaultCap, recipient: address, ctx: &mut
 }
 
 /// Revoke a VaultCap
+/// SECURITY FIX: Prevent self-revocation
 public fun revoke_cap(self: &mut Vault, cap: &VaultCap, cap_to_revoke: ID, ctx: &TxContext) {
     assert!(cap.vault_id == object::id(self), ENotAuthorized);
     assert!(!self.revoked_caps.contains(&object::id(cap)), ERevokedCap);
+    // SECURITY FIX: Prevent revoking your own capability
+    assert!(object::id(cap) != cap_to_revoke, ESelfRevocation);
 
     if (!self.revoked_caps.contains(&cap_to_revoke)) {
         self.revoked_caps.insert(cap_to_revoke);
