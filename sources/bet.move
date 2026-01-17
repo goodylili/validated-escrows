@@ -512,6 +512,13 @@ public fun is_creator_cap_revoked(self: &Bet, cap_id: ID): bool { self.revoked_c
 public fun is_participant_revoked(self: &Bet, addr: address): bool { self.revoked_participants.contains(&addr) }
 public fun is_participant_cap_revoked(self: &Bet, cap_id: ID): bool { self.revoked_participant_caps.contains(&cap_id) }
 
+// === Share Function ===
+
+/// Convert a Bet into a shared object
+public fun share(bet: Bet) {
+    transfer::share_object(bet);
+}
+
 // === Status Constants ===
 
 public fun status_open(): u8 { STATUS_OPEN }

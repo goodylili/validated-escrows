@@ -1,0 +1,51 @@
+[
+  {
+    "name": "terminal::create_bet",
+    "general_command": "sui client call --package <PACKAGE_ID> --module terminal --function create_bet --args <TERMS> <EXPIRY_MS> --gas-budget <GAS_BUDGET>",
+    "command_ran": "sui client call --json --package 0x3689759fc8ee9ed6b843cc4a50d33e25c0184fea2c27850db915e4bff8368a18 --module terminal --function create_bet --args \"Demo bet: Team A vs Team B\" 2000000000000 --gas-budget 200000000",
+    "tx_link": "https://suiscan.xyz/testnet/tx/sjCRjkeBt3EJ1eogehRbLFxt2yzQWQavHqVXqyjzZPh",
+    "status": "failed"
+  },
+  {
+    "name": "terminal::join_bet",
+    "general_command": "sui client call --package <PACKAGE_ID> --module terminal --function join_bet --type-args <COIN_TYPE> --args <BET_ID> <VAULT_ID> <POLL_ID> <COIN_OBJECT_ID> --gas-budget <GAS_BUDGET>",
+    "command_ran": "sui client call --package 0x3689759fc8ee9ed6b843cc4a50d33e25c0184fea2c27850db915e4bff8368a18 --module terminal --function join_bet --type-args 0x2::sui::SUI --args <BET_ID> <VAULT_ID> <POLL_ID> <COIN_OBJECT_ID> --gas-budget 200000000",
+    "tx_link": "https://suiscan.xyz/testnet/tx/<TX_DIGEST>",
+    "status": "pending"
+  },
+  {
+    "name": "terminal::vote",
+    "general_command": "sui client call --package <PACKAGE_ID> --module terminal --function vote --args <BET_ID> <POLL_ID> <OUTCOME_ADDRESS> --gas-budget <GAS_BUDGET>",
+    "command_ran": "sui client call --package 0x3689759fc8ee9ed6b843cc4a50d33e25c0184fea2c27850db915e4bff8368a18 --module terminal --function vote --args <BET_ID> <POLL_ID> 0x559ef1509af6e837d4153b3b08d9534d3df3f336a5cb6498fa248ce6cb2172e6 --gas-budget 200000000",
+    "tx_link": "https://suiscan.xyz/testnet/tx/<TX_DIGEST>",
+    "status": "pending"
+  },
+  {
+    "name": "terminal::resolve_bet",
+    "general_command": "sui client call --package <PACKAGE_ID> --module terminal --function resolve_bet --args <BET_ID> <POLL_ID> <VAULT_ID> <VAULT_CAP_ID> --gas-budget <GAS_BUDGET>",
+    "command_ran": "sui client call --package 0x3689759fc8ee9ed6b843cc4a50d33e25c0184fea2c27850db915e4bff8368a18 --module terminal --function resolve_bet --args <BET_ID> <POLL_ID> <VAULT_ID> <VAULT_CAP_ID> --gas-budget 200000000",
+    "tx_link": "https://suiscan.xyz/testnet/tx/<TX_DIGEST>",
+    "status": "pending"
+  },
+  {
+    "name": "vault::claim_winnings",
+    "general_command": "sui client call --package <PACKAGE_ID> --module vault --function claim_winnings --type-args <COIN_TYPE> --args <VAULT_ID> --gas-budget <GAS_BUDGET>",
+    "command_ran": "sui client call --package 0x3689759fc8ee9ed6b843cc4a50d33e25c0184fea2c27850db915e4bff8368a18 --module vault --function claim_winnings --type-args 0x2::sui::SUI --args <VAULT_ID> --gas-budget 200000000",
+    "tx_link": "https://suiscan.xyz/testnet/tx/<TX_DIGEST>",
+    "status": "pending"
+  },
+  {
+    "name": "vault::claim_refund",
+    "general_command": "sui client call --package <PACKAGE_ID> --module vault --function claim_refund --type-args <COIN_TYPE> --args <VAULT_ID> --gas-budget <GAS_BUDGET>",
+    "command_ran": "sui client call --package 0x3689759fc8ee9ed6b843cc4a50d33e25c0184fea2c27850db915e4bff8368a18 --module vault --function claim_refund --type-args 0x2::sui::SUI --args <VAULT_ID> --gas-budget 200000000",
+    "tx_link": "https://suiscan.xyz/testnet/tx/<TX_DIGEST>",
+    "status": "pending"
+  },
+  {
+    "name": "terminal::force_dissolve_expired",
+    "general_command": "sui client call --package <PACKAGE_ID> --module terminal --function force_dissolve_expired --args <BET_ID> <VAULT_ID> <VAULT_CAP_ID> --gas-budget <GAS_BUDGET>",
+    "command_ran": "sui client call --package 0x3689759fc8ee9ed6b843cc4a50d33e25c0184fea2c27850db915e4bff8368a18 --module terminal --function force_dissolve_expired --args <BET_ID> <VAULT_ID> <VAULT_CAP_ID> --gas-budget 200000000",
+    "tx_link": "https://suiscan.xyz/testnet/tx/<TX_DIGEST>",
+    "status": "pending"
+  }
+]

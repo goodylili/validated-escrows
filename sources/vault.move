@@ -884,6 +884,13 @@ public fun has_nft(self: &Vault, object_id: ID): bool { self.nft_assets.contains
 public fun is_cap_revoked(self: &Vault, cap_id: ID): bool { self.revoked_caps.contains(&cap_id) }
 public fun is_participant_revoked(self: &Vault, addr: address): bool { self.revoked_participants.contains(&addr) }
 
+// === Share Function ===
+
+/// Convert a Vault into a shared object
+public fun share(vault: Vault) {
+    transfer::share_object(vault);
+}
+
 // === Status Constants ===
 
 public fun status_open(): u8 { STATUS_OPEN }

@@ -21,11 +21,6 @@ const ENotParticipant: u64 = 7;
 
 // === Structs ===
 
-/// Admin capability for package-wide operations
-public struct AdminCap has key, store {
-    id: UID,
-}
-
 // === Events ===
 
 public struct BetSystemCreated has copy, drop {
@@ -46,21 +41,16 @@ public struct BetForceDissolvedExpired has copy, drop {
 
 // === Public Entry Functions ===
 
-fun init(ctx: &mut TxContext) {
-    let admin_cap = AdminCap {
-        id: object::new(ctx),
-    };
-    transfer::transfer(admin_cap, ctx.sender());
-}
 
 /// Create a complete bet with vault and poll
 /// Creator is automatically added as a participant
+/// Bet, Vault, and Poll become shared objects; capabilities are sent to the creator
 public fun create_bet(
     terms: String,
     expiry: u64,
+    creator: address,
     ctx: &mut TxContext,
-): (Bet, Vault, Poll, CreatorCap, VaultCap, ParticipantCap) {
-    let creator = ctx.sender();
+) {
 
     // Create vault first
     let (mut vault, vault_cap) = vault::new(object::id_from_address(@0x0), ctx);
@@ -85,7 +75,6 @@ public fun create_bet(
     vault.add_participant(creator, ctx);
     
     // Update poll required participants
-    // Update poll required participants
     poll.set_required_participants(bet::participant_count(&bet), ctx);
 
     event::emit(BetSystemCreated {
@@ -96,9 +85,18 @@ public fun create_bet(
         terms: bet::terms(&bet),
         expiry,
     });
-
-    (bet, vault, poll, creator_cap, vault_cap, participant_cap)
+    
+    // Share bet, vault, and poll as shared objects
+    bet::share(bet);
+    vault::share(vault);
+    poll::share(poll);
+    
+    // Transfer capabilities to the creator
+    transfer::public_transfer(creator_cap, creator);
+    transfer::public_transfer(vault_cap, creator);
+    transfer::public_transfer(participant_cap, creator);
 }
+
 
 /// Join a bet and deposit funds
 /// SECURITY FIX: Added validation for bet/vault/poll linkage

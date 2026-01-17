@@ -520,3 +520,10 @@ public fun witness_quorum_bps(): u64 { WITNESS_QUORUM_BPS }
 public fun witness_count(self: &Poll): u64 { self.witness_count }
 public fun max_witness_count(): u64 { MAX_WITNESS_COUNT }
 public fun locked_witness_weight(self: &Poll): Option<u64> { self.locked_witness_weight }
+
+// === Share Function ===
+
+/// Convert a Poll into a shared object
+public fun share(poll: Poll) {
+    transfer::share_object(poll);
+}
