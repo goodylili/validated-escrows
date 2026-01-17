@@ -1,0 +1,40 @@
+- Bets - shared object
+- Bets have terms that are specified as strings.
+- Bets may have references which are links from social media.
+- Bet’s have multimedia URL that serve as proof.
+- Expiry is set in bets; they are not extendable
+- When a bet expires
+- Bet creators can choose if contracts stay open for new entrants. (if anyone can participate or just a specific set of addresses)
+    - Bet Creator - Also a participant - admin
+        - creates a bet and get’s creator cap
+        - can edit bet metadata - the CreatorCap
+        - can issue others with admin cap - the CreatorCap
+        - can dissolve a bet (make participants claim a refund) - the CreatorCap
+        - can lock bets via the CreatorCap
+    - Participants  - n number of people
+        - Can join and leave bets if the vault status is unlocked.
+        - when they leave a bet they automatically withdraw their only funds
+        - can only leave if the status of the bet isn’t in-motion (before the bet begins)
+        - can vote to resolve the bet. 100% quorum is specified across all participants, evenly or by weight
+        - Get’s ParticipantCap that specified the ability and the bet for which it’s for
+- Polls
+    - must have a registry
+    - must be attached to a bet
+    - Two ways to win a poll
+        - participants vote and agree - their votes = 100%
+        - witnesses vote and agree - 66.6% is the minimum (constant)
+        - participants totally agreeing is the bigger metric for winning
+    - Witnesses - n number of people
+        - Can vote on bets or veto
+        - get the WitnessCap capabilities
+        - votes are weighed or equal, when a witness is created their weight is determined.
+- Vaults - asset bank
+    - Can only be created via a bet and they’re technically attached to bets
+    - Can hold any type of object (coins, NFTs e.t.c)
+    - must keep an active registry to keep track of who deposited what
+    - Vaults can be locked or unlocked (locked when a bet is locked)
+    - withdrawals from the vault goes two ways (tracked through status: disbursed, paidout),
+        - everything either goes to one user.
+        - every depositor gets their funds back.
+    - Can take deposits from only bet participants.
+    - Users has to claim from the vault in both cases of withdrawals.
