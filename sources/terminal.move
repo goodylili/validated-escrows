@@ -36,7 +36,6 @@ public struct BetSystemCreated has copy, drop {
     creator: address,
     terms: String,
     expiry: u64,
-    open_to_all: bool,
 }
 
 public struct BetForceDissolvedExpired has copy, drop {
@@ -60,7 +59,6 @@ fun init(ctx: &mut TxContext) {
 public fun create_bet(
     terms: String,
     expiry: u64,
-    open_to_all: bool,
     ctx: &mut TxContext,
 ): (Bet, Vault, Poll, CreatorCap, VaultCap, ParticipantCap) {
     let creator = ctx.sender();
@@ -74,7 +72,7 @@ public fun create_bet(
     let poll_id = poll::id(&poll);
 
     // Create bet
-    let (mut bet, creator_cap) = bet::new(terms, expiry, open_to_all, vault_id, poll_id, ctx);
+    let (mut bet, creator_cap) = bet::new(terms, expiry, vault_id, poll_id, ctx);
     let bet_id = bet::id(&bet);
 
     // Update vault and poll with correct bet_id
@@ -97,7 +95,6 @@ public fun create_bet(
         creator,
         terms: bet::terms(&bet),
         expiry,
-        open_to_all,
     });
 
     (bet, vault, poll, creator_cap, vault_cap, participant_cap)
@@ -152,12 +149,17 @@ public fun leave_bet<T>(
     refund
 }
 
-/// Revoke a participant's ability to get re-issued caps
+/// Revoke a participant's ability to get re-issued caps (Soft Ban - prevents re-entry)
 public fun revoke_participant(
     bet: &mut Bet,
+    cap: &CreatorCap,
     participant: address,
     ctx: &TxContext,
 ) {
+    assert!(bet::cap_bet_id(cap) == bet::id(bet), ENotAuthorized);
+    assert!(!bet::is_creator_cap_revoked(bet, object::id(cap)), ERevokedCap);
+    assert!(bet::is_participant(bet, bet::cap_issued_to(cap)), ENotParticipant);
+
     bet.revoke_participant(participant, ctx);
 }
 
@@ -446,3 +448,5 @@ public fun revoke_witness_cap(
 
     poll.revoke_witness_cap(cap_to_revoke, ctx);
 }
+
+

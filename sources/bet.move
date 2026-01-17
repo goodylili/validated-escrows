@@ -37,7 +37,6 @@ public struct BetCreated has copy, drop {
     creator: address,
     terms: String,
     expiry: u64,
-    open_to_all: bool,
     vault_id: ID,
     poll_id: ID,
 }
@@ -123,7 +122,6 @@ public struct Bet has key {
     expiry: u64,
     creator: address,
     status: u8,
-    open_to_all: bool,
     allowed: VecSet<address>,
     participants: Table<address, u64>,
     participant_count: u64,
@@ -140,7 +138,6 @@ public struct Bet has key {
 public fun new(
     terms: String,
     expiry: u64,
-    open_to_all: bool,
     vault_id: ID,
     poll_id: ID,
     ctx: &mut TxContext,
@@ -151,6 +148,9 @@ public fun new(
     // Validate expiry is in the future
     assert!(expiry > now, EExpiryInPast);
 
+    let mut allowed = vec_set::empty();
+    allowed.insert(creator);
+
     let bet = Bet {
         id: object::new(ctx),
         terms,
@@ -159,8 +159,7 @@ public fun new(
         expiry,
         creator,
         status: STATUS_OPEN,
-        open_to_all,
-        allowed: vec_set::empty(),
+        allowed,
         participants: table::new(ctx),
         participant_count: 0,
         vault_id,
@@ -181,7 +180,6 @@ public fun new(
         creator,
         terms: bet.terms,
         expiry,
-        open_to_all,
         vault_id,
         poll_id,
     });
@@ -225,12 +223,11 @@ public fun join(self: &mut Bet, ctx: &mut TxContext): ParticipantCap {
 
     assert!(self.status == STATUS_OPEN, EBetNotOpen);
     assert!(now < self.expiry, EBetExpired);
+    assert!(now < self.expiry, EBetExpired);
     assert!(!self.participants.contains(sender), EAlreadyJoined);
     assert!(!self.revoked_participants.contains(&sender), ERevokedCap);
 
-    if (!self.open_to_all) {
-        assert!(self.allowed.contains(&sender), ENotAllowed);
-    };
+    assert!(self.allowed.contains(&sender), ENotAllowed);
 
     self.participants.add(sender, now);
     self.participant_count = self.participant_count + 1;
@@ -483,7 +480,6 @@ public fun references(self: &Bet): vector<String> { self.references }
 public fun multimedia_url(self: &Bet): Option<String> { self.multimedia_url }
 public fun expiry(self: &Bet): u64 { self.expiry }
 public fun creator(self: &Bet): address { self.creator }
-public fun is_open_to_all(self: &Bet): bool { self.open_to_all }
 public fun is_participant(self: &Bet, addr: address): bool { self.participants.contains(addr) }
 public fun participant_count(self: &Bet): u64 { self.participant_count }
 public fun vault_id(self: &Bet): ID { self.vault_id }
