@@ -29,6 +29,9 @@ const ENotOpen: u64 = 6;
 const EInsufficientBalance: u64 = 7;
 const ENotParticipant: u64 = 8;
 const ENftNotFound: u64 = 9;
+const EZeroDeposit: u64 = 10;
+const ESelfNotAllowed: u64 = 11;
+const ENotLocked: u64 = 12;
 
 // === Events ===
 
@@ -131,6 +134,12 @@ public struct VaultCapIssued has copy, drop {
     issued_by: address,
 }
 
+public struct ParticipantRegistered has copy, drop {
+    vault_id: ID,
+    bet_id: ID,
+    participant: address,
+}
+
 // === Structs ===
 
 public struct VaultCap has key, store {
@@ -190,6 +199,12 @@ public fun new(bet_id: ID, ctx: &mut TxContext): (Vault, VaultCap) {
 public(package) fun add_participant(self: &mut Vault, participant: address, _ctx: &mut TxContext) {
     if (!self.participants.contains(participant)) {
         self.participants.add(participant, true);
+        
+        event::emit(ParticipantRegistered {
+            vault_id: object::id(self),
+            bet_id: self.bet_id,
+            participant,
+        });
     };
 }
 
@@ -214,6 +229,7 @@ public fun deposit<T>(
     assert!(self.participants.contains(sender), ENotParticipant);
 
     let amount = coin.value();
+    assert!(amount > 0, EZeroDeposit);
     let type_name = std::type_name::into_string(std::type_name::with_original_ids<T>());
     let asset_type = type_name.to_string();
 
@@ -576,7 +592,7 @@ public fun lock(self: &mut Vault, cap: &VaultCap, ctx: &TxContext) {
 /// Unlock the vault
 public fun unlock(self: &mut Vault, cap: &VaultCap, ctx: &TxContext) {
     assert!(cap.vault_id == object::id(self), ENotAuthorized);
-    assert!(self.status == STATUS_LOCKED, ENotOpen);
+    assert!(self.status == STATUS_LOCKED, ENotLocked);
     self.status = STATUS_OPEN;
     event::emit(VaultUnlocked {
         vault_id: object::id(self),
@@ -585,10 +601,11 @@ public fun unlock(self: &mut Vault, cap: &VaultCap, ctx: &TxContext) {
     });
 }
 
-/// Set vault as resolved with a winner
+/// Set vault as resolved with a winner (must be a registered participant)
 public fun set_resolved(self: &mut Vault, cap: &VaultCap, winner: address, ctx: &TxContext) {
     assert!(cap.vault_id == object::id(self), ENotAuthorized);
     assert!(self.status != STATUS_RESOLVED && self.status != STATUS_DISBURSED, EAlreadyResolved);
+    assert!(self.participants.contains(winner), ENotParticipant);
     self.status = STATUS_RESOLVED;
     self.winner = option::some(winner);
     event::emit(VaultResolved {
@@ -612,9 +629,11 @@ public fun set_disbursed(self: &mut Vault, cap: &VaultCap, ctx: &TxContext) {
     });
 }
 
-/// Create a new VaultCap for delegation
+/// Create a new VaultCap for delegation (only to participants, cannot issue to self)
 public fun issue_cap(self: &Vault, cap: &VaultCap, recipient: address, ctx: &mut TxContext): VaultCap {
     assert!(cap.vault_id == object::id(self), ENotAuthorized);
+    assert!(recipient != ctx.sender(), ESelfNotAllowed);
+    assert!(self.participants.contains(recipient), ENotParticipant);
     event::emit(VaultCapIssued {
         vault_id: object::id(self),
         bet_id: self.bet_id,

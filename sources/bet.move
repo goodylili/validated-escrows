@@ -25,6 +25,9 @@ const ENotAllowed: u64 = 6;
 const EAlreadyResolved: u64 = 7;
 const ECannotLeave: u64 = 8;
 const ESelfNotAllowed: u64 = 9;
+const EInsufficientParticipants: u64 = 10;
+const EExpiryInPast: u64 = 11;
+const ENotLocked: u64 = 12;
 
 // === Events ===
 
@@ -127,6 +130,10 @@ public fun new(
     ctx: &mut TxContext,
 ): (Bet, CreatorCap) {
     let creator = ctx.sender();
+    let now = ctx.epoch_timestamp_ms();
+    
+    // Validate expiry is in the future
+    assert!(expiry > now, EExpiryInPast);
 
     let bet = Bet {
         id: object::new(ctx),
@@ -246,10 +253,11 @@ public fun leave(self: &mut Bet, cap: ParticipantCap, ctx: &TxContext) {
     let _ = ctx;
 }
 
-/// Lock the bet
+/// Lock the bet (requires minimum 2 participants)
 public fun lock(self: &mut Bet, cap: &CreatorCap, ctx: &TxContext) {
     assert!(cap.bet_id == object::id(self), EInvalidCap);
     assert!(self.status == STATUS_OPEN, EBetLocked);
+    assert!(self.participant_count >= 2, EInsufficientParticipants);
 
     self.status = STATUS_LOCKED;
 
@@ -263,7 +271,7 @@ public fun lock(self: &mut Bet, cap: &CreatorCap, ctx: &TxContext) {
 /// Unlock the bet
 public fun unlock(self: &mut Bet, cap: &CreatorCap, ctx: &TxContext) {
     assert!(cap.bet_id == object::id(self), EInvalidCap);
-    assert!(self.status == STATUS_LOCKED, EBetNotOpen);
+    assert!(self.status == STATUS_LOCKED, ENotLocked);
 
     self.status = STATUS_OPEN;
 
@@ -363,10 +371,11 @@ public fun set_multimedia(self: &mut Bet, cap: &CreatorCap, url: String, ctx: &T
     });
 }
 
-/// Issue another CreatorCap
+/// Issue another CreatorCap (only to participants, cannot issue to self)
 public fun issue_creator_cap(self: &Bet, cap: &CreatorCap, recipient: address, ctx: &mut TxContext): CreatorCap {
     assert!(cap.bet_id == object::id(self), EInvalidCap);
     assert!(recipient != ctx.sender(), ESelfNotAllowed);
+    assert!(self.participants.contains(recipient), ENotParticipant);
 
     event::emit(CreatorCapIssued {
         bet_id: object::id(self),

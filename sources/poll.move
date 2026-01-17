@@ -5,6 +5,8 @@ use std::string::String;
 use sui::event;
 use sui::table::{Self, Table};
 
+use terminal::bet::{Self, Bet};
+
 // === Constants ===
 
 const WITNESS_QUORUM_BPS: u64 = 6666;
@@ -17,6 +19,10 @@ const EAlreadyVoted: u64 = 1;
 const ENotWitness: u64 = 2;
 const EPollResolved: u64 = 3;
 const EWitnessAlreadyRegistered: u64 = 4;
+const ENotParticipant: u64 = 5;
+const EInvalidOutcome: u64 = 6;
+const EZeroWeight: u64 = 7;
+const EBetPollMismatch: u64 = 8;
 
 // === Events ===
 
@@ -142,15 +148,19 @@ public(package) fun set_required_participants(self: &mut Poll, count: u64) {
     self.required_participants = count;
 }
 
-/// Add a witness with voting weight
-public fun add_witness(
+/// Add a witness with voting weight (only participants can add witnesses)
+public(package) fun add_witness(
     self: &mut Poll,
+    bet: &Bet,
     witness: address,
     weight: u64,
     ctx: &mut TxContext,
 ): WitnessCap {
     assert!(!self.resolved, EPollResolved);
+    assert!(bet::id(bet) == self.bet_id, EBetPollMismatch);
+    assert!(bet::is_participant(bet, ctx.sender()), ENotParticipant);
     assert!(!self.witnesses.contains(witness), EWitnessAlreadyRegistered);
+    assert!(weight > 0, EZeroWeight);
 
     self.witnesses.add(witness, weight);
     self.total_witness_weight = self.total_witness_weight + weight;
@@ -171,14 +181,19 @@ public fun add_witness(
     }
 }
 
-/// Participant casts a vote
+/// Participant casts a vote (validates voter and outcome are bet participants)
 public fun participant_vote(
     self: &mut Poll,
-    voter: address,
+    bet: &Bet,
     outcome: address,
     ctx: &mut TxContext,
 ) {
+    let voter = ctx.sender();
+    
     assert!(!self.resolved, EPollResolved);
+    assert!(bet::id(bet) == self.bet_id, EBetPollMismatch);
+    assert!(bet::is_participant(bet, voter), ENotParticipant);
+    assert!(bet::is_participant(bet, outcome), EInvalidOutcome);
     assert!(!self.participant_votes.contains(voter), EAlreadyVoted);
 
     self.participant_votes.add(voter, Vote { outcome, weight: 1 });
@@ -206,16 +221,19 @@ public fun participant_vote(
     self.check_resolution(ctx);
 }
 
-/// Witness casts a vote
+/// Witness casts a vote (validates outcome is a bet participant)
 public fun witness_vote(
     self: &mut Poll,
+    bet: &Bet,
     cap: &WitnessCap,
     outcome: address,
     ctx: &mut TxContext,
 ) {
     assert!(!self.resolved, EPollResolved);
+    assert!(bet::id(bet) == self.bet_id, EBetPollMismatch);
     assert!(cap.poll_id == object::id(self), EInvalidCap);
     assert!(self.witnesses.contains(cap.witness), ENotWitness);
+    assert!(bet::is_participant(bet, outcome), EInvalidOutcome);
     assert!(!self.witness_votes.contains(cap.witness), EAlreadyVoted);
 
     let weight = cap.weight;

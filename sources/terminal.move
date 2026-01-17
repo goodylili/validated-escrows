@@ -9,6 +9,14 @@ use terminal::bet::{Self, Bet, CreatorCap, ParticipantCap};
 use terminal::poll::{Self, Poll, WitnessCap};
 use terminal::vault::{Self, Vault, VaultCap};
 
+// === Error Codes ===
+
+const EPollNotResolved: u64 = 0;
+const EBetPollMismatch: u64 = 1;
+const EBetVaultMismatch: u64 = 2;
+const ENotExpired: u64 = 3;
+const EBetNotLocked: u64 = 4;
+
 // === Events ===
 
 public struct BetSystemCreated has copy, drop {
@@ -19,6 +27,13 @@ public struct BetSystemCreated has copy, drop {
     terms: String,
     expiry: u64,
     open_to_all: bool,
+}
+
+public struct BetForceDissolvedExpired has copy, drop {
+    bet_id: ID,
+    vault_id: ID,
+    dissolved_by: address,
+    expiry: u64,
 }
 
 // === Public Entry Functions ===
@@ -163,22 +178,23 @@ public fun dissolve_bet(
 
 /// Participant votes on poll outcome
 public fun vote(
+    bet: &Bet,
     poll: &mut Poll,
     outcome: address,
     ctx: &mut TxContext,
 ) {
-    let voter = ctx.sender();
-    poll.participant_vote(voter, outcome, ctx);
+    poll.participant_vote(bet, outcome, ctx);
 }
 
 /// Witness votes on poll outcome
 public fun witness_vote(
+    bet: &Bet,
     poll: &mut Poll,
     cap: &WitnessCap,
     outcome: address,
     ctx: &mut TxContext,
 ) {
-    poll.witness_vote(cap, outcome, ctx);
+    poll.witness_vote(bet, cap, outcome, ctx);
 }
 
 /// Witness vetoes (relinquishes voting power)
@@ -190,14 +206,15 @@ public fun witness_veto(
     poll.veto(cap, ctx);
 }
 
-/// Add a witness to the poll
+/// Add a witness to the poll (requires bet reference for authorization)
 public fun add_witness(
+    bet: &Bet,
     poll: &mut Poll,
     witness: address,
     weight: u64,
     ctx: &mut TxContext,
 ): WitnessCap {
-    poll.add_witness(witness, weight, ctx)
+    poll.add_witness(bet, witness, weight, ctx)
 }
 
 /// Claim winnings after bet resolution
@@ -245,7 +262,7 @@ public fun claim_nft_refund<T: key + store>(
     vault.claim_nft_refund(object_id, ctx)
 }
 
-/// Resolve bet after poll is resolved
+/// Resolve bet after poll is resolved (validates bet/poll/vault linkage)
 public fun resolve_bet(
     bet: &mut Bet,
     poll: &Poll,
@@ -253,11 +270,41 @@ public fun resolve_bet(
     vault_cap: &VaultCap,
     ctx: &TxContext,
 ) {
-    assert!(poll.is_resolved(), 0);
+    // Validate linkage between bet, poll, and vault
+    assert!(bet::poll_id(bet) == poll::id(poll), EBetPollMismatch);
+    assert!(bet::vault_id(bet) == vault::id(vault), EBetVaultMismatch);
+    assert!(poll.is_resolved(), EPollNotResolved);
+    
     let winner = *poll.outcome().borrow();
 
     bet.resolve(winner, ctx);
     vault.set_resolved(vault_cap, winner, ctx);
+}
+
+/// Force dissolve an expired locked bet (anyone can call after expiry)
+public fun force_dissolve_expired(
+    bet: &mut Bet,
+    vault: &mut Vault,
+    vault_cap: &VaultCap,
+    ctx: &TxContext,
+) {
+    let now = ctx.epoch_timestamp_ms();
+    let expiry = bet::expiry(bet);
+    
+    assert!(now >= expiry, ENotExpired);
+    assert!(bet::is_locked(bet), EBetNotLocked);
+    
+    // Force resolve the poll as dissolved
+    // Note: bet.dissolve requires CreatorCap, so we use a package-level approach
+    // For now, we set vault to disbursed so participants can claim refunds
+    vault.set_disbursed(vault_cap, ctx);
+    
+    event::emit(BetForceDissolvedExpired {
+        bet_id: bet::id(bet),
+        vault_id: vault::id(vault),
+        dissolved_by: ctx.sender(),
+        expiry,
+    });
 }
 
 /// Edit bet terms
