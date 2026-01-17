@@ -4,6 +4,7 @@ module terminal::poll;
 use std::string::String;
 use sui::event;
 use sui::table::{Self, Table};
+use sui::vec_set::{Self, VecSet};
 
 use terminal::bet::{Self, Bet};
 
@@ -11,6 +12,8 @@ use terminal::bet::{Self, Bet};
 
 const WITNESS_QUORUM_BPS: u64 = 6666;
 const BPS_DENOMINATOR: u64 = 10000;
+const MAX_WITNESS_COUNT: u64 = 10;
+const MAX_WITNESS_WEIGHT_BPS: u64 = 5000; // Max 50% weight for single witness
 
 // === Error Codes ===
 
@@ -23,6 +26,9 @@ const ENotParticipant: u64 = 5;
 const EInvalidOutcome: u64 = 6;
 const EZeroWeight: u64 = 7;
 const EBetPollMismatch: u64 = 8;
+const ETooManyWitnesses: u64 = 9;
+const EWeightExceedsMax: u64 = 10;
+const ERevokedCap: u64 = 11;
 
 // === Events ===
 
@@ -76,6 +82,13 @@ public struct PollResolved has copy, drop {
     witness_weight: u64,
 }
 
+public struct WitnessCapRevoked has copy, drop {
+    poll_id: ID,
+    bet_id: ID,
+    revoked_cap_id: ID,
+    revoked_by: address,
+}
+
 // === Structs ===
 
 public struct WitnessCap has key, store {
@@ -106,6 +119,8 @@ public struct Poll has key {
     outcome: Option<address>,
     participant_voter_list: vector<address>,
     witness_outcome_list: vector<address>,
+    witness_count: u64,
+    revoked_witness_caps: VecSet<ID>,
 }
 
 // === Public Functions ===
@@ -132,6 +147,8 @@ public fun new(
         outcome: option::none(),
         participant_voter_list: vector::empty(),
         witness_outcome_list: vector::empty(),
+        witness_count: 0,
+        revoked_witness_caps: vec_set::empty(),
     };
 
     event::emit(PollCreated {
@@ -148,6 +165,11 @@ public(package) fun set_required_participants(self: &mut Poll, count: u64) {
     self.required_participants = count;
 }
 
+/// Set the Bet ID (called during initialization)
+public(package) fun set_bet_id(self: &mut Poll, bet_id: ID) {
+    self.bet_id = bet_id;
+}
+
 /// Add a witness with voting weight (only participants can add witnesses)
 public(package) fun add_witness(
     self: &mut Poll,
@@ -161,9 +183,16 @@ public(package) fun add_witness(
     assert!(bet::is_participant(bet, ctx.sender()), ENotParticipant);
     assert!(!self.witnesses.contains(witness), EWitnessAlreadyRegistered);
     assert!(weight > 0, EZeroWeight);
+    assert!(self.witness_count < MAX_WITNESS_COUNT, ETooManyWitnesses);
+    
+    // Validate weight doesn't exceed max percentage after adding
+    let new_total = self.total_witness_weight + weight;
+    let max_individual_weight = (new_total * MAX_WITNESS_WEIGHT_BPS) / BPS_DENOMINATOR;
+    assert!(weight <= max_individual_weight, EWeightExceedsMax);
 
     self.witnesses.add(witness, weight);
     self.total_witness_weight = self.total_witness_weight + weight;
+    self.witness_count = self.witness_count + 1;
 
     event::emit(WitnessAdded {
         poll_id: object::id(self),
@@ -233,6 +262,7 @@ public fun witness_vote(
     assert!(bet::id(bet) == self.bet_id, EBetPollMismatch);
     assert!(cap.poll_id == object::id(self), EInvalidCap);
     assert!(self.witnesses.contains(cap.witness), ENotWitness);
+    assert!(!self.revoked_witness_caps.contains(&object::id(cap)), ERevokedCap);
     assert!(bet::is_participant(bet, outcome), EInvalidOutcome);
     assert!(!self.witness_votes.contains(cap.witness), EAlreadyVoted);
 
@@ -264,6 +294,24 @@ public fun witness_vote(
     self.check_resolution(ctx);
 }
 
+/// Revoke a WitnessCap
+public(package) fun revoke_witness_cap(
+    self: &mut Poll,
+    cap_to_revoke: ID,
+    ctx: &TxContext,
+) {
+    if (!self.revoked_witness_caps.contains(&cap_to_revoke)) {
+        self.revoked_witness_caps.insert(cap_to_revoke);
+    };
+
+    event::emit(WitnessCapRevoked {
+        poll_id: object::id(self),
+        bet_id: self.bet_id,
+        revoked_cap_id: cap_to_revoke,
+        revoked_by: ctx.sender(),
+    });
+}
+
 /// Witness vetoes - relinquishes voting power
 public fun veto(
     self: &mut Poll,
@@ -278,6 +326,7 @@ public fun veto(
 
     self.witnesses.remove(witness);
     self.total_witness_weight = self.total_witness_weight - weight;
+    self.witness_count = self.witness_count - 1;
 
     if (self.witness_votes.contains(witness)) {
         let vote = self.witness_votes.remove(witness);
@@ -422,3 +471,5 @@ public fun cap_poll_id(cap: &WitnessCap): ID { cap.poll_id }
 public fun cap_witness(cap: &WitnessCap): address { cap.witness }
 public fun cap_weight(cap: &WitnessCap): u64 { cap.weight }
 public fun witness_quorum_bps(): u64 { WITNESS_QUORUM_BPS }
+public fun witness_count(self: &Poll): u64 { self.witness_count }
+public fun max_witness_count(): u64 { MAX_WITNESS_COUNT }

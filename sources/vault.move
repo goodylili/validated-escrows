@@ -9,6 +9,7 @@ use sui::coin::{Self, Coin};
 use sui::event;
 use sui::object_bag::{Self, ObjectBag};
 use sui::table::{Self, Table};
+use sui::vec_set::{Self, VecSet};
 
 // === Constants ===
 
@@ -32,6 +33,7 @@ const ENftNotFound: u64 = 9;
 const EZeroDeposit: u64 = 10;
 const ESelfNotAllowed: u64 = 11;
 const ENotLocked: u64 = 12;
+const ERevokedCap: u64 = 13;
 
 // === Events ===
 
@@ -134,6 +136,13 @@ public struct VaultCapIssued has copy, drop {
     issued_by: address,
 }
 
+public struct VaultCapRevoked has copy, drop {
+    vault_id: ID,
+    bet_id: ID,
+    revoked_cap_id: ID,
+    revoked_by: address,
+}
+
 public struct ParticipantRegistered has copy, drop {
     vault_id: ID,
     bet_id: ID,
@@ -145,6 +154,7 @@ public struct ParticipantRegistered has copy, drop {
 public struct VaultCap has key, store {
     id: UID,
     vault_id: ID,
+    issued_to: address,
 }
 
 public struct BalanceKey<phantom T> has copy, drop, store {}
@@ -170,6 +180,8 @@ public struct Vault has key {
     participants: Table<address, bool>,
     status: u8,
     winner: Option<address>,
+    /// Track revoked VaultCap IDs
+    revoked_caps: VecSet<ID>,
 }
 
 // === Public Functions ===
@@ -185,14 +197,21 @@ public fun new(bet_id: ID, ctx: &mut TxContext): (Vault, VaultCap) {
         participants: table::new(ctx),
         status: STATUS_OPEN,
         winner: option::none(),
+        revoked_caps: vec_set::empty(),
     };
 
     let cap = VaultCap {
         id: object::new(ctx),
         vault_id: object::id(&vault),
+        issued_to: ctx.sender(), // Initial cap to creator
     };
 
     (vault, cap)
+}
+
+/// Set the Bet ID (called during initialization)
+public(package) fun set_bet_id(self: &mut Vault, bet_id: ID) {
+    self.bet_id = bet_id;
 }
 
 /// Register an address as a valid participant (called by bet module)
@@ -579,6 +598,8 @@ public fun claim_nft_winnings<T: key + store>(
 /// Lock the vault
 public fun lock(self: &mut Vault, cap: &VaultCap, ctx: &TxContext) {
     assert!(cap.vault_id == object::id(self), ENotAuthorized);
+    assert!(!self.revoked_caps.contains(&object::id(cap)), ERevokedCap);
+    assert!(self.participants.contains(cap.issued_to), ENotParticipant);
     assert!(self.status == STATUS_OPEN, EVaultLocked);
     self.status = STATUS_LOCKED;
     event::emit(VaultLocked {
@@ -592,6 +613,8 @@ public fun lock(self: &mut Vault, cap: &VaultCap, ctx: &TxContext) {
 /// Unlock the vault
 public fun unlock(self: &mut Vault, cap: &VaultCap, ctx: &TxContext) {
     assert!(cap.vault_id == object::id(self), ENotAuthorized);
+    assert!(!self.revoked_caps.contains(&object::id(cap)), ERevokedCap);
+    assert!(self.participants.contains(cap.issued_to), ENotParticipant);
     assert!(self.status == STATUS_LOCKED, ENotLocked);
     self.status = STATUS_OPEN;
     event::emit(VaultUnlocked {
@@ -604,6 +627,8 @@ public fun unlock(self: &mut Vault, cap: &VaultCap, ctx: &TxContext) {
 /// Set vault as resolved with a winner (must be a registered participant)
 public fun set_resolved(self: &mut Vault, cap: &VaultCap, winner: address, ctx: &TxContext) {
     assert!(cap.vault_id == object::id(self), ENotAuthorized);
+    assert!(!self.revoked_caps.contains(&object::id(cap)), ERevokedCap);
+    assert!(self.participants.contains(cap.issued_to), ENotParticipant);
     assert!(self.status != STATUS_RESOLVED && self.status != STATUS_DISBURSED, EAlreadyResolved);
     assert!(self.participants.contains(winner), ENotParticipant);
     self.status = STATUS_RESOLVED;
@@ -619,6 +644,8 @@ public fun set_resolved(self: &mut Vault, cap: &VaultCap, winner: address, ctx: 
 /// Set vault as disbursed (refund mode)
 public fun set_disbursed(self: &mut Vault, cap: &VaultCap, ctx: &TxContext) {
     assert!(cap.vault_id == object::id(self), ENotAuthorized);
+    assert!(!self.revoked_caps.contains(&object::id(cap)), ERevokedCap);
+    assert!(self.participants.contains(cap.issued_to), ENotParticipant);
     assert!(self.status != STATUS_RESOLVED && self.status != STATUS_DISBURSED, EAlreadyResolved);
     self.status = STATUS_DISBURSED;
     event::emit(VaultDisbursed {
@@ -632,6 +659,8 @@ public fun set_disbursed(self: &mut Vault, cap: &VaultCap, ctx: &TxContext) {
 /// Create a new VaultCap for delegation (only to participants, cannot issue to self)
 public fun issue_cap(self: &Vault, cap: &VaultCap, recipient: address, ctx: &mut TxContext): VaultCap {
     assert!(cap.vault_id == object::id(self), ENotAuthorized);
+    assert!(!self.revoked_caps.contains(&object::id(cap)), ERevokedCap);
+    assert!(self.participants.contains(cap.issued_to), ENotParticipant);
     assert!(recipient != ctx.sender(), ESelfNotAllowed);
     assert!(self.participants.contains(recipient), ENotParticipant);
     event::emit(VaultCapIssued {
@@ -643,8 +672,27 @@ public fun issue_cap(self: &Vault, cap: &VaultCap, recipient: address, ctx: &mut
     VaultCap {
         id: object::new(ctx),
         vault_id: object::id(self),
+        issued_to: recipient,
     }
 }
+
+/// Revoke a VaultCap
+public fun revoke_cap(self: &mut Vault, cap: &VaultCap, cap_to_revoke: ID, ctx: &TxContext) {
+    assert!(cap.vault_id == object::id(self), ENotAuthorized);
+    assert!(!self.revoked_caps.contains(&object::id(cap)), ERevokedCap);
+
+    if (!self.revoked_caps.contains(&cap_to_revoke)) {
+        self.revoked_caps.insert(cap_to_revoke);
+    };
+
+    event::emit(VaultCapRevoked {
+        vault_id: object::id(self),
+        bet_id: self.bet_id,
+        revoked_cap_id: cap_to_revoke,
+        revoked_by: ctx.sender(),
+    });
+}
+
 
 // === Getters ===
 
@@ -749,8 +797,10 @@ public fun deposit_count(self: &Vault): u64 {
 }
 
 public fun cap_vault_id(cap: &VaultCap): ID { cap.vault_id }
+public fun cap_issued_to(cap: &VaultCap): address { cap.issued_to }
 public fun is_participant(self: &Vault, addr: address): bool { self.participants.contains(addr) }
 public fun has_nft(self: &Vault, object_id: ID): bool { self.nft_assets.contains(object_id) }
+public fun is_cap_revoked(self: &Vault, cap_id: ID): bool { self.revoked_caps.contains(&cap_id) }
 
 // === Status Constants ===
 

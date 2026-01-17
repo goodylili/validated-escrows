@@ -16,6 +16,16 @@ const EBetPollMismatch: u64 = 1;
 const EBetVaultMismatch: u64 = 2;
 const ENotExpired: u64 = 3;
 const EBetNotLocked: u64 = 4;
+const ENotAuthorized: u64 = 5;
+const ERevokedCap: u64 = 6;
+const ENotParticipant: u64 = 7;
+
+// === Structs ===
+
+/// Admin capability for package-wide operations
+public struct AdminCap has key, store {
+    id: UID,
+}
 
 // === Events ===
 
@@ -38,6 +48,13 @@ public struct BetForceDissolvedExpired has copy, drop {
 
 // === Public Entry Functions ===
 
+fun init(ctx: &mut TxContext) {
+    let admin_cap = AdminCap {
+        id: object::new(ctx),
+    };
+    transfer::transfer(admin_cap, ctx.sender());
+}
+
 /// Create a complete bet with vault and poll
 /// Creator is automatically added as a participant
 public fun create_bet(
@@ -59,6 +76,10 @@ public fun create_bet(
     // Create bet
     let (mut bet, creator_cap) = bet::new(terms, expiry, open_to_all, vault_id, poll_id, ctx);
     let bet_id = bet::id(&bet);
+
+    // Update vault and poll with correct bet_id
+    vault.set_bet_id(bet_id);
+    poll.set_bet_id(bet_id);
 
     // Add creator as a participant
     let participant_cap = bet.add_participant(creator, ctx);
@@ -129,6 +150,15 @@ public fun leave_bet<T>(
     poll.set_required_participants(bet::participant_count(bet));
 
     refund
+}
+
+/// Revoke a participant's ability to get re-issued caps
+public fun revoke_participant(
+    bet: &mut Bet,
+    participant: address,
+    ctx: &TxContext,
+) {
+    bet.revoke_participant(participant, ctx);
 }
 
 /// Deposit additional funds to vault
@@ -296,7 +326,9 @@ public fun force_dissolve_expired(
     
     // Force resolve the poll as dissolved
     // Note: bet.dissolve requires CreatorCap, so we use a package-level approach
-    // For now, we set vault to disbursed so participants can claim refunds
+    // We update both bet status and vault status
+    
+    bet.force_dissolve(ctx);
     vault.set_disbursed(vault_cap, ctx);
     
     event::emit(BetForceDissolvedExpired {
@@ -375,4 +407,42 @@ public fun issue_vault_cap(
     ctx: &mut TxContext,
 ): VaultCap {
     vault.issue_cap(cap, recipient, ctx)
+}
+
+/// Revoke a CreatorCap
+public fun revoke_creator_cap(
+    bet: &mut Bet,
+    cap: &CreatorCap,
+    cap_to_revoke: ID,
+    ctx: &TxContext,
+) {
+    bet.revoke_creator_cap(cap, cap_to_revoke, ctx);
+}
+
+/// Revoke a VaultCap
+public fun revoke_vault_cap(
+    vault: &mut Vault,
+    cap: &VaultCap,
+    cap_to_revoke: ID,
+    ctx: &TxContext,
+) {
+    vault.revoke_cap(cap, cap_to_revoke, ctx);
+}
+
+/// Revoke a WitnessCap (requires legitimate CreatorCap)
+public fun revoke_witness_cap(
+    bet: &Bet,
+    poll: &mut Poll,
+    cap: &CreatorCap,
+    cap_to_revoke: ID,
+    ctx: &TxContext,
+) {
+    assert!(bet::cap_bet_id(cap) == bet::id(bet), ENotAuthorized);
+    assert!(!bet::is_creator_cap_revoked(bet, object::id(cap)), ERevokedCap);
+    assert!(bet::poll_id(bet) == poll::id(poll), EBetPollMismatch);
+    
+    // Validate cap holder is a current participant
+    assert!(bet::is_participant(bet, bet::cap_issued_to(cap)), ENotParticipant);
+
+    poll.revoke_witness_cap(cap_to_revoke, ctx);
 }
