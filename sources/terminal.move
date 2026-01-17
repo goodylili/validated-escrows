@@ -24,25 +24,35 @@ public struct BetSystemCreated has copy, drop {
 // === Public Entry Functions ===
 
 /// Create a complete bet with vault and poll
+/// Creator is automatically added as a participant
 public fun create_bet(
     terms: String,
     expiry: u64,
     open_to_all: bool,
     ctx: &mut TxContext,
-): (Bet, Vault, Poll, CreatorCap, VaultCap) {
+): (Bet, Vault, Poll, CreatorCap, VaultCap, ParticipantCap) {
     let creator = ctx.sender();
 
     // Create vault first
-    let (vault, vault_cap) = vault::new(object::id_from_address(@0x0), ctx);
+    let (mut vault, vault_cap) = vault::new(object::id_from_address(@0x0), ctx);
     let vault_id = vault::id(&vault);
 
     // Create poll
-    let poll = poll::new(object::id_from_address(@0x0), 0, ctx);
+    let mut poll = poll::new(object::id_from_address(@0x0), 0, ctx);
     let poll_id = poll::id(&poll);
 
     // Create bet
-    let (bet, creator_cap) = bet::new(terms, expiry, open_to_all, vault_id, poll_id, ctx);
+    let (mut bet, creator_cap) = bet::new(terms, expiry, open_to_all, vault_id, poll_id, ctx);
     let bet_id = bet::id(&bet);
+
+    // Add creator as a participant
+    let participant_cap = bet.add_participant(creator, ctx);
+    
+    // Register creator in vault so they can deposit
+    vault.add_participant(creator, ctx);
+    
+    // Update poll required participants
+    poll.set_required_participants(bet::participant_count(&bet));
 
     event::emit(BetSystemCreated {
         bet_id,
@@ -54,7 +64,7 @@ public fun create_bet(
         open_to_all,
     });
 
-    (bet, vault, poll, creator_cap, vault_cap)
+    (bet, vault, poll, creator_cap, vault_cap, participant_cap)
 }
 
 /// Join a bet and deposit funds
@@ -94,15 +104,16 @@ public fun leave_bet<T>(
     // Leave bet
     bet.leave(cap, ctx);
     
+    // Withdraw deposit from vault (removes from registry)
+    let refund = vault.withdraw_deposit<T>(participant, ctx);
+    
     // Remove from vault participants
     vault.remove_participant(participant);
     
     // Update poll required participants
     poll.set_required_participants(bet::participant_count(bet));
 
-    // Set vault to disbursed for this withdrawal (temporary for leaving)
-    // Note: This should only happen if vault is still open
-    vault.claim_refund(ctx)
+    refund
 }
 
 /// Deposit additional funds to vault
@@ -203,6 +214,35 @@ public fun claim_refund<T>(
     ctx: &mut TxContext,
 ): Coin<T> {
     vault.claim_refund(ctx)
+}
+
+// === NFT Functions ===
+
+/// Deposit an NFT into the vault
+public fun deposit_nft<T: key + store>(
+    vault: &mut Vault,
+    nft: T,
+    ctx: &mut TxContext,
+) {
+    vault.deposit_nft(nft, ctx);
+}
+
+/// Claim NFT winnings after bet resolution
+public fun claim_nft_winnings<T: key + store>(
+    vault: &mut Vault,
+    object_id: ID,
+    ctx: &mut TxContext,
+): T {
+    vault.claim_nft_winnings(object_id, ctx)
+}
+
+/// Claim NFT refund after bet dissolution
+public fun claim_nft_refund<T: key + store>(
+    vault: &mut Vault,
+    object_id: ID,
+    ctx: &mut TxContext,
+): T {
+    vault.claim_nft_refund(object_id, ctx)
 }
 
 /// Resolve bet after poll is resolved

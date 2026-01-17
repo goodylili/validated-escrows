@@ -163,6 +163,34 @@ public fun new(
     (bet, cap)
 }
 
+/// Add a participant directly (package-level, used for auto-adding bet creator)
+public(package) fun add_participant(
+    self: &mut Bet,
+    participant: address,
+    ctx: &mut TxContext,
+): ParticipantCap {
+    let now = ctx.epoch_timestamp_ms();
+
+    assert!(self.status == STATUS_OPEN, EBetNotOpen);
+    assert!(now < self.expiry, EBetExpired);
+    assert!(!self.participants.contains(participant), EAlreadyJoined);
+
+    self.participants.add(participant, now);
+    self.participant_count = self.participant_count + 1;
+
+    event::emit(ParticipantJoined {
+        bet_id: object::id(self),
+        participant,
+        participant_count: self.participant_count,
+    });
+
+    ParticipantCap {
+        id: object::new(ctx),
+        bet_id: object::id(self),
+        participant,
+    }
+}
+
 /// Join a bet - requires vault to be passed for participant registration
 public fun join(self: &mut Bet, ctx: &mut TxContext): ParticipantCap {
     let sender = ctx.sender();
