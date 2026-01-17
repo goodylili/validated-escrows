@@ -86,7 +86,8 @@ public fun create_bet(
     vault.add_participant(creator, ctx);
     
     // Update poll required participants
-    poll.set_required_participants(bet::participant_count(&bet));
+    // Update poll required participants
+    poll.set_required_participants(bet::participant_count(&bet), ctx);
 
     event::emit(BetSystemCreated {
         bet_id,
@@ -119,7 +120,7 @@ public fun join_bet<T>(
     vault.deposit(coin, ctx);
     
     // Update poll required participants
-    poll.set_required_participants(bet::participant_count(bet));
+    poll.set_required_participants(bet::participant_count(bet), ctx);
 
     cap
 }
@@ -131,22 +132,32 @@ public fun leave_bet<T>(
     poll: &mut Poll,
     cap: ParticipantCap,
     ctx: &mut TxContext,
-): Coin<T> {
+): (Coin<T>, Option<ParticipantCap>) {
     let participant = bet::participant_cap_participant(&cap);
     
-    // Leave bet
-    bet.leave(cap, ctx);
-    
-    // Withdraw deposit from vault (removes from registry)
+    // Withdraw deposit from vault (removes form registry)
     let refund = vault.withdraw_deposit<T>(participant, ctx);
     
-    // Remove from vault participants
-    vault.remove_participant(participant);
-    
-    // Update poll required participants
-    poll.set_required_participants(bet::participant_count(bet));
-
-    refund
+    // Check if user has other deposits
+    if (vault.deposit_count_for_user(participant) > 0) {
+        // User still has active deposits, do not remove from bet/vault participants
+        // Return cap so they can withdraw other assets
+        (refund, option::some(cap))
+    } else {
+        // User has no more deposits, remove completely
+        
+        // Leave bet
+        bet.leave(cap, ctx);
+        
+        // Remove from vault participants
+        vault.remove_participant(participant);
+        
+        // Update poll required participants
+        // Note: bet.leave already decremented participant count in bet
+        poll.set_required_participants(bet::participant_count(bet), ctx);
+        
+        (refund, option::none())
+    }
 }
 
 /// Revoke a participant's ability to get re-issued caps (Soft Ban - prevents re-entry)
@@ -184,17 +195,7 @@ public fun lock_bet(
     vault.lock(vault_cap, ctx);
 }
 
-/// Unlock bet and vault together
-public fun unlock_bet(
-    bet: &mut Bet,
-    vault: &mut Vault,
-    creator_cap: &CreatorCap,
-    vault_cap: &VaultCap,
-    ctx: &TxContext,
-) {
-    bet.unlock(creator_cap, ctx);
-    vault.unlock(vault_cap, ctx);
-}
+
 
 /// Dissolve bet and set vault to disbursed
 public fun dissolve_bet(

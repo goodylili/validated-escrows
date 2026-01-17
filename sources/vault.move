@@ -32,7 +32,7 @@ const ENotParticipant: u64 = 8;
 const ENftNotFound: u64 = 9;
 const EZeroDeposit: u64 = 10;
 const ESelfNotAllowed: u64 = 11;
-const ENotLocked: u64 = 12;
+
 const ERevokedCap: u64 = 13;
 
 // === Events ===
@@ -61,11 +61,7 @@ public struct VaultLocked has copy, drop {
     depositor_count: u64,
 }
 
-public struct VaultUnlocked has copy, drop {
-    vault_id: ID,
-    bet_id: ID,
-    unlocked_by: address,
-}
+
 
 public struct VaultResolved has copy, drop {
     vault_id: ID,
@@ -610,19 +606,7 @@ public fun lock(self: &mut Vault, cap: &VaultCap, ctx: &TxContext) {
     });
 }
 
-/// Unlock the vault
-public fun unlock(self: &mut Vault, cap: &VaultCap, ctx: &TxContext) {
-    assert!(cap.vault_id == object::id(self), ENotAuthorized);
-    assert!(!self.revoked_caps.contains(&object::id(cap)), ERevokedCap);
-    assert!(self.participants.contains(cap.issued_to), ENotParticipant);
-    assert!(self.status == STATUS_LOCKED, ENotLocked);
-    self.status = STATUS_OPEN;
-    event::emit(VaultUnlocked {
-        vault_id: object::id(self),
-        bet_id: self.bet_id,
-        unlocked_by: ctx.sender(),
-    });
-}
+
 
 /// Set vault as resolved with a winner (must be a registered participant)
 public fun set_resolved(self: &mut Vault, cap: &VaultCap, winner: address, ctx: &TxContext) {
@@ -791,7 +775,21 @@ public fun get_deposits(self: &Vault, addr: address): vector<DepositEntry> {
     result
 }
 
-/// Get total deposit count
+/// Get total count of deposits for a specific user
+public fun deposit_count_for_user(self: &Vault, user: address): u64 {
+    let mut count = 0;
+    let mut i = 0;
+    let len = self.deposits.length();
+    while (i < len) {
+        let entry = self.deposits.borrow(i);
+        if (entry.depositor == user) {
+            count = count + 1;
+        };
+        i = i + 1;
+    };
+    count
+}
+
 public fun deposit_count(self: &Vault): u64 {
     self.deposits.length()
 }

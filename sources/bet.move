@@ -27,7 +27,7 @@ const ECannotLeave: u64 = 8;
 const ESelfNotAllowed: u64 = 9;
 const EInsufficientParticipants: u64 = 10;
 const EExpiryInPast: u64 = 11;
-const ENotLocked: u64 = 12;
+
 const ERevokedCap: u64 = 13;
 
 // === Events ===
@@ -57,11 +57,6 @@ public struct BetLocked has copy, drop {
     bet_id: ID,
     locked_by: address,
     participant_count: u64,
-}
-
-public struct BetUnlocked has copy, drop {
-    bet_id: ID,
-    unlocked_by: address,
 }
 
 public struct BetResolved has copy, drop {
@@ -288,21 +283,6 @@ public fun lock(self: &mut Bet, cap: &CreatorCap, ctx: &TxContext) {
     });
 }
 
-/// Unlock the bet
-public fun unlock(self: &mut Bet, cap: &CreatorCap, ctx: &TxContext) {
-    assert!(cap.bet_id == object::id(self), EInvalidCap);
-    assert!(!self.revoked_creator_caps.contains(&object::id(cap)), ERevokedCap);
-    assert!(self.participants.contains(cap.issued_to), ENotParticipant);
-    assert!(self.status == STATUS_LOCKED, ENotLocked);
-
-    self.status = STATUS_OPEN;
-
-    event::emit(BetUnlocked {
-        bet_id: object::id(self),
-        unlocked_by: ctx.sender(),
-    });
-}
-
 /// Resolve the bet with a winner (called internally)
 public(package) fun resolve(self: &mut Bet, winner: address, ctx: &TxContext) {
     assert!(self.status == STATUS_LOCKED, EBetNotOpen);
@@ -323,6 +303,7 @@ public fun dissolve(self: &mut Bet, cap: &CreatorCap, ctx: &TxContext) {
     assert!(cap.bet_id == object::id(self), EInvalidCap);
     assert!(!self.revoked_creator_caps.contains(&object::id(cap)), ERevokedCap);
     assert!(self.participants.contains(cap.issued_to), ENotParticipant);
+    assert!(self.status == STATUS_OPEN, EBetLocked);
     assert!(self.status != STATUS_RESOLVED && self.status != STATUS_DISSOLVED, EAlreadyResolved);
 
     self.status = STATUS_DISSOLVED;

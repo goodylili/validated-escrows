@@ -161,8 +161,9 @@ public fun new(
 }
 
 /// Update required participants count
-public(package) fun set_required_participants(self: &mut Poll, count: u64) {
+public(package) fun set_required_participants(self: &mut Poll, count: u64, ctx: &mut TxContext) {
     self.required_participants = count;
+    self.check_resolution(ctx);
 }
 
 /// Set the Bet ID (called during initialization)
