@@ -1,4 +1,3 @@
-/// Poll module for bet resolution voting with dual-quorum.
 module terminal::poll;
 
 use std::string::String;
@@ -171,7 +170,7 @@ public(package) fun set_bet_id(self: &mut Poll, bet_id: ID) {
     self.bet_id = bet_id;
 }
 
-/// Add a witness with voting weight (only participants can add witnesses)
+/// Add a witness with voting weight (only participants can add witnesses, and witness must be a participant)
 public(package) fun add_witness(
     self: &mut Poll,
     bet: &Bet,
@@ -182,14 +181,22 @@ public(package) fun add_witness(
     assert!(!self.resolved, EPollResolved);
     assert!(bet::id(bet) == self.bet_id, EBetPollMismatch);
     assert!(bet::is_participant(bet, ctx.sender()), ENotParticipant);
+    // SECURITY FIX: Witness must also be a participant to prevent Sybil attacks
+    assert!(bet::is_participant(bet, witness), ENotParticipant);
     assert!(!self.witnesses.contains(witness), EWitnessAlreadyRegistered);
     assert!(weight > 0, EZeroWeight);
     assert!(self.witness_count < MAX_WITNESS_COUNT, ETooManyWitnesses);
     
-    // Validate weight doesn't exceed max percentage after adding
-    let new_total = self.total_witness_weight + weight;
-    let max_individual_weight = (new_total * MAX_WITNESS_WEIGHT_BPS) / BPS_DENOMINATOR;
-    assert!(weight <= max_individual_weight, EWeightExceedsMax);
+    // Validate weight doesn't exceed max percentage of CURRENT total (not new total)
+    // This prevents manipulation where the first witness can claim unlimited weight
+    if (self.total_witness_weight > 0) {
+        let max_individual_weight = (self.total_witness_weight * MAX_WITNESS_WEIGHT_BPS) / BPS_DENOMINATOR;
+        assert!(weight <= max_individual_weight, EWeightExceedsMax);
+    } else {
+        // For the first witness, cap at a reasonable initial weight (e.g., 100)
+        // This prevents a single witness from having all the voting power
+        assert!(weight <= 100, EWeightExceedsMax);
+    };
 
     self.witnesses.add(witness, weight);
     self.total_witness_weight = self.total_witness_weight + weight;
@@ -314,10 +321,11 @@ public(package) fun revoke_witness_cap(
 }
 
 /// Witness vetoes - relinquishes voting power
+/// SECURITY FIX: Re-check resolution after veto in case weights have changed
 public fun veto(
     self: &mut Poll,
     cap: WitnessCap,
-    _ctx: &mut TxContext,
+    ctx: &mut TxContext,
 ) {
     let WitnessCap { id, poll_id, witness, weight } = cap;
 
@@ -348,6 +356,10 @@ public fun veto(
     });
 
     id.delete();
+
+    // SECURITY FIX: Re-check resolution after veto - the reduced witness weight
+    // might cause quorum to be reached by remaining votes
+    self.check_resolution(ctx);
 }
 
 fun check_resolution(self: &mut Poll, _ctx: &mut TxContext) {

@@ -1,5 +1,3 @@
-/// Vault module for heterogeneous asset storage with deposit tracking.
-/// Supports both coins and NFTs with a simplified vector-based registry.
 module terminal::vault;
 
 use std::string::String;
@@ -34,6 +32,8 @@ const EZeroDeposit: u64 = 10;
 const ESelfNotAllowed: u64 = 11;
 
 const ERevokedCap: u64 = 13;
+const ERevokedParticipant: u64 = 14;
+const EInvalidRecipient: u64 = 15;
 
 // === Events ===
 
@@ -178,6 +178,8 @@ public struct Vault has key {
     winner: Option<address>,
     /// Track revoked VaultCap IDs
     revoked_caps: VecSet<ID>,
+    /// Track revoked/soft-banned participants (cannot be winners)
+    revoked_participants: VecSet<address>,
 }
 
 // === Public Functions ===
@@ -194,6 +196,7 @@ public fun new(bet_id: ID, ctx: &mut TxContext): (Vault, VaultCap) {
         status: STATUS_OPEN,
         winner: option::none(),
         revoked_caps: vec_set::empty(),
+        revoked_participants: vec_set::empty(),
     };
 
     let cap = VaultCap {
@@ -227,6 +230,13 @@ public(package) fun add_participant(self: &mut Vault, participant: address, _ctx
 public(package) fun remove_participant(self: &mut Vault, participant: address) {
     if (self.participants.contains(participant)) {
         self.participants.remove(participant);
+    };
+}
+
+/// Revoke/soft-ban a participant (prevents them from being winner)
+public(package) fun revoke_participant(self: &mut Vault, participant: address) {
+    if (!self.revoked_participants.contains(&participant)) {
+        self.revoked_participants.insert(participant);
     };
 }
 
@@ -293,6 +303,7 @@ public fun deposit<T>(
 }
 
 /// Claim coin refund when vault is disbursed
+/// SECURITY FIX: Collects ALL matching deposits to prevent double-claim exploits
 public fun claim_refund<T>(
     self: &mut Vault,
     ctx: &mut TxContext,
@@ -305,40 +316,50 @@ public fun claim_refund<T>(
     let vault_id = object::id(self);
     let bet_id = self.bet_id;
 
-    // Find and remove the deposit entry
-    let mut amount = 0u64;
-    let mut found_idx: Option<u64> = option::none();
+    // SECURITY FIX: Find ALL matching deposit entries and collect total amount
+    // This prevents double-claim if duplicate entries somehow exist
+    let mut total_amount = 0u64;
+    let mut indices_to_remove: vector<u64> = vector::empty();
     let mut i = 0;
     let len = self.deposits.length();
-    
+
     while (i < len) {
         let entry = self.deposits.borrow(i);
         if (entry.depositor == sender && entry.asset_type == asset_type && entry.object_id.is_none()) {
-            amount = entry.amount;
-            found_idx = option::some(i);
-            break
+            total_amount = total_amount + entry.amount;
+            indices_to_remove.push_back(i);
         };
         i = i + 1;
     };
 
-    assert!(found_idx.is_some(), ENoDeposit);
-    self.deposits.swap_remove(*found_idx.borrow());
+    assert!(indices_to_remove.length() > 0, ENoDeposit);
+    // SECURITY FIX: Ensure we're not refunding zero
+    assert!(total_amount > 0, EZeroDeposit);
+
+    // Remove entries in reverse order to maintain valid indices
+    let mut j = indices_to_remove.length();
+    while (j > 0) {
+        j = j - 1;
+        let idx = *indices_to_remove.borrow(j);
+        self.deposits.swap_remove(idx);
+    };
 
     let balance: &mut Balance<T> = self.coin_assets.borrow_mut(BalanceKey<T> {});
-    assert!(balance.value() >= amount, EInsufficientBalance);
+    assert!(balance.value() >= total_amount, EInsufficientBalance);
 
     event::emit(CoinRefundClaimed {
         vault_id,
         bet_id,
         claimant: sender,
-        amount,
+        amount: total_amount,
         asset_type,
     });
 
-    coin::from_balance(balance.split(amount), ctx)
+    coin::from_balance(balance.split(total_amount), ctx)
 }
 
 /// Withdraw coin deposit when vault is open (for participants leaving the bet early)
+/// SECURITY FIX: Collects ALL matching deposits to prevent double-withdraw exploits
 public(package) fun withdraw_deposit<T>(
     self: &mut Vault,
     depositor: address,
@@ -351,37 +372,46 @@ public(package) fun withdraw_deposit<T>(
     let vault_id = object::id(self);
     let bet_id = self.bet_id;
 
-    // Find and remove the deposit entry
-    let mut amount = 0u64;
-    let mut found_idx: Option<u64> = option::none();
+    // SECURITY FIX: Find ALL matching deposit entries and collect total amount
+    // This prevents double-withdraw if duplicate entries somehow exist
+    let mut total_amount = 0u64;
+    let mut indices_to_remove: vector<u64> = vector::empty();
     let mut i = 0;
     let len = self.deposits.length();
-    
+
     while (i < len) {
         let entry = self.deposits.borrow(i);
         if (entry.depositor == depositor && entry.asset_type == asset_type && entry.object_id.is_none()) {
-            amount = entry.amount;
-            found_idx = option::some(i);
-            break
+            total_amount = total_amount + entry.amount;
+            indices_to_remove.push_back(i);
         };
         i = i + 1;
     };
 
-    assert!(found_idx.is_some(), ENoDeposit);
-    self.deposits.swap_remove(*found_idx.borrow());
+    assert!(indices_to_remove.length() > 0, ENoDeposit);
+    // SECURITY FIX: Ensure we're not withdrawing zero
+    assert!(total_amount > 0, EZeroDeposit);
+
+    // Remove entries in reverse order to maintain valid indices
+    let mut j = indices_to_remove.length();
+    while (j > 0) {
+        j = j - 1;
+        let idx = *indices_to_remove.borrow(j);
+        self.deposits.swap_remove(idx);
+    };
 
     let balance: &mut Balance<T> = self.coin_assets.borrow_mut(BalanceKey<T> {});
-    assert!(balance.value() >= amount, EInsufficientBalance);
+    assert!(balance.value() >= total_amount, EInsufficientBalance);
 
     event::emit(CoinWithdrawn {
         vault_id,
         bet_id,
         depositor,
-        amount,
+        amount: total_amount,
         asset_type,
     });
 
-    coin::from_balance(balance.split(amount), ctx)
+    coin::from_balance(balance.split(total_amount), ctx)
 }
 
 /// Claim coin winnings when vault is resolved (winner takes all of a type)
@@ -547,6 +577,8 @@ public(package) fun withdraw_nft<T: key + store>(
 }
 
 /// Claim NFT winnings when vault is resolved (winner claims specific NFT)
+/// SECURITY: Winner can only claim NFTs that were deposited in this vault
+/// The deposit entry must exist to prove the NFT was part of the bet
 public fun claim_nft_winnings<T: key + store>(
     self: &mut Vault,
     object_id: ID,
@@ -562,21 +594,29 @@ public fun claim_nft_winnings<T: key + store>(
     let bet_id = self.bet_id;
     let winner = ctx.sender();
 
-    // Remove NFT from storage (winner can claim any NFT)
-    assert!(self.nft_assets.contains(object_id), ENftNotFound);
-    let nft: T = self.nft_assets.remove(object_id);
-
-    // Remove the deposit entry for this NFT
+    // SECURITY FIX: Verify the NFT has a valid deposit entry before allowing claim
+    // This ensures only NFTs that were actually deposited can be claimed
+    let mut found_idx: Option<u64> = option::none();
     let mut i = 0;
     let len = self.deposits.length();
     while (i < len) {
         let entry = self.deposits.borrow(i);
         if (entry.object_id.is_some() && *entry.object_id.borrow() == object_id) {
-            self.deposits.swap_remove(i);
+            found_idx = option::some(i);
             break
         };
         i = i + 1;
     };
+
+    // Must have a deposit entry - this proves the NFT was legitimately deposited
+    assert!(found_idx.is_some(), ENoDeposit);
+
+    // Remove the deposit entry
+    self.deposits.swap_remove(*found_idx.borrow());
+
+    // Remove NFT from storage
+    assert!(self.nft_assets.contains(object_id), ENftNotFound);
+    let nft: T = self.nft_assets.remove(object_id);
 
     event::emit(NftWinningsClaimed {
         vault_id,
@@ -608,13 +648,15 @@ public fun lock(self: &mut Vault, cap: &VaultCap, ctx: &TxContext) {
 
 
 
-/// Set vault as resolved with a winner (must be a registered participant)
+/// Set vault as resolved with a winner (must be a registered participant and not revoked)
 public fun set_resolved(self: &mut Vault, cap: &VaultCap, winner: address, ctx: &TxContext) {
     assert!(cap.vault_id == object::id(self), ENotAuthorized);
     assert!(!self.revoked_caps.contains(&object::id(cap)), ERevokedCap);
     assert!(self.participants.contains(cap.issued_to), ENotParticipant);
     assert!(self.status != STATUS_RESOLVED && self.status != STATUS_DISBURSED, EAlreadyResolved);
     assert!(self.participants.contains(winner), ENotParticipant);
+    // SECURITY FIX: Ensure winner is not a revoked/soft-banned participant
+    assert!(!self.revoked_participants.contains(&winner), ERevokedParticipant);
     self.status = STATUS_RESOLVED;
     self.winner = option::some(winner);
     event::emit(VaultResolved {
@@ -641,12 +683,19 @@ public fun set_disbursed(self: &mut Vault, cap: &VaultCap, ctx: &TxContext) {
 }
 
 /// Create a new VaultCap for delegation (only to participants, cannot issue to self)
+/// SECURITY FIX: Validate recipient is not zero address and strengthen self-issuance check
 public fun issue_cap(self: &Vault, cap: &VaultCap, recipient: address, ctx: &mut TxContext): VaultCap {
     assert!(cap.vault_id == object::id(self), ENotAuthorized);
     assert!(!self.revoked_caps.contains(&object::id(cap)), ERevokedCap);
     assert!(self.participants.contains(cap.issued_to), ENotParticipant);
+    // SECURITY FIX: Validate recipient is not zero address
+    assert!(recipient != @0x0, EInvalidRecipient);
+    // SECURITY FIX: Prevent issuing to self (both sender and cap holder)
     assert!(recipient != ctx.sender(), ESelfNotAllowed);
+    assert!(recipient != cap.issued_to, ESelfNotAllowed);
     assert!(self.participants.contains(recipient), ENotParticipant);
+    // SECURITY FIX: Ensure recipient is not revoked
+    assert!(!self.revoked_participants.contains(&recipient), ERevokedParticipant);
     event::emit(VaultCapIssued {
         vault_id: object::id(self),
         bet_id: self.bet_id,
@@ -799,6 +848,7 @@ public fun cap_issued_to(cap: &VaultCap): address { cap.issued_to }
 public fun is_participant(self: &Vault, addr: address): bool { self.participants.contains(addr) }
 public fun has_nft(self: &Vault, object_id: ID): bool { self.nft_assets.contains(object_id) }
 public fun is_cap_revoked(self: &Vault, cap_id: ID): bool { self.revoked_caps.contains(&cap_id) }
+public fun is_participant_revoked(self: &Vault, addr: address): bool { self.revoked_participants.contains(&addr) }
 
 // === Status Constants ===
 

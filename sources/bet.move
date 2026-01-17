@@ -1,4 +1,3 @@
-/// Bet module for creating and managing peer-to-peer bets.
 module terminal::bet;
 
 use std::string::String;
@@ -12,6 +11,9 @@ const STATUS_OPEN: u8 = 0;
 const STATUS_LOCKED: u8 = 1;
 const STATUS_RESOLVED: u8 = 2;
 const STATUS_DISSOLVED: u8 = 3;
+
+/// Minimum time before expiry (1 hour in milliseconds)
+const MIN_EXPIRY_DURATION_MS: u64 = 3600000;
 
 // === Error Codes ===
 
@@ -27,7 +29,7 @@ const ECannotLeave: u64 = 8;
 const ESelfNotAllowed: u64 = 9;
 const EInsufficientParticipants: u64 = 10;
 const EExpiryInPast: u64 = 11;
-
+const EExpiryTooSoon: u64 = 12;
 const ERevokedCap: u64 = 13;
 
 // === Events ===
@@ -125,6 +127,8 @@ public struct Bet has key {
     winner: Option<address>,
     revoked_creator_caps: VecSet<ID>,
     revoked_participants: VecSet<address>,
+    /// Track revoked ParticipantCap IDs to prevent reuse after revocation
+    revoked_participant_caps: VecSet<ID>,
 }
 
 // === Public Functions ===
@@ -139,9 +143,11 @@ public fun new(
 ): (Bet, CreatorCap) {
     let creator = ctx.sender();
     let now = ctx.epoch_timestamp_ms();
-    
+
     // Validate expiry is in the future
     assert!(expiry > now, EExpiryInPast);
+    // SECURITY FIX: Validate minimum expiry duration to prevent immediate expiry
+    assert!(expiry >= now + MIN_EXPIRY_DURATION_MS, EExpiryTooSoon);
 
     let mut allowed = vec_set::empty();
     allowed.insert(creator);
@@ -162,6 +168,7 @@ public fun new(
         winner: option::none(),
         revoked_creator_caps: vec_set::empty(),
         revoked_participants: vec_set::empty(),
+        revoked_participant_caps: vec_set::empty(),
     };
 
     let cap = CreatorCap {
@@ -218,7 +225,6 @@ public fun join(self: &mut Bet, ctx: &mut TxContext): ParticipantCap {
 
     assert!(self.status == STATUS_OPEN, EBetNotOpen);
     assert!(now < self.expiry, EBetExpired);
-    assert!(now < self.expiry, EBetExpired);
     assert!(!self.participants.contains(sender), EAlreadyJoined);
     assert!(!self.revoked_participants.contains(&sender), ERevokedCap);
 
@@ -250,6 +256,8 @@ public fun leave(self: &mut Bet, cap: ParticipantCap, ctx: &TxContext) {
     let ParticipantCap { id, bet_id, participant } = cap;
 
     assert!(bet_id == object::id(self), EInvalidCap);
+    // SECURITY FIX: Check if this cap has been revoked
+    assert!(!self.revoked_participant_caps.contains(&object::uid_to_inner(&id)), ERevokedCap);
     assert!(self.status == STATUS_OPEN, ECannotLeave);
     assert!(self.participants.contains(participant), ENotParticipant);
 
@@ -328,11 +336,14 @@ public fun add_allowed(self: &mut Bet, cap: &CreatorCap, addr: address, _ctx: &m
 }
 
 /// Remove address from allowed list
+/// SECURITY FIX: Cannot remove the original creator from allowed list
 public fun remove_allowed(self: &mut Bet, cap: &CreatorCap, addr: address, _ctx: &mut TxContext) {
     assert!(cap.bet_id == object::id(self), EInvalidCap);
     assert!(!self.revoked_creator_caps.contains(&object::id(cap)), ERevokedCap);
     assert!(self.participants.contains(cap.issued_to), ENotParticipant);
     assert!(self.status == STATUS_OPEN, EBetLocked);
+    // SECURITY FIX: Prevent removing the original creator from allowed list
+    assert!(addr != self.creator, ENotAllowed);
 
     if (self.allowed.contains(&addr)) {
         self.allowed.remove(&addr);
@@ -388,11 +399,14 @@ public fun set_multimedia(self: &mut Bet, cap: &CreatorCap, url: String, ctx: &T
 }
 
 /// Issue another CreatorCap (only to participants, cannot issue to self)
+/// SECURITY FIX: Strengthened self-issuance check
 public fun issue_creator_cap(self: &Bet, cap: &CreatorCap, recipient: address, ctx: &mut TxContext): CreatorCap {
     assert!(cap.bet_id == object::id(self), EInvalidCap);
     assert!(!self.revoked_creator_caps.contains(&object::id(cap)), ERevokedCap);
     assert!(self.participants.contains(cap.issued_to), ENotParticipant);
+    // SECURITY FIX: Prevent issuing to self (both sender and cap holder)
     assert!(recipient != ctx.sender(), ESelfNotAllowed);
+    assert!(recipient != cap.issued_to, ESelfNotAllowed);
     assert!(self.participants.contains(recipient), ENotParticipant);
     assert!(!self.revoked_participants.contains(&recipient), ERevokedCap);
 
@@ -439,6 +453,13 @@ public(package) fun revoke_participant(self: &mut Bet, participant: address, ctx
     });
 }
 
+/// Revoke a specific ParticipantCap ID (prevents reuse of old caps)
+public(package) fun revoke_participant_cap(self: &mut Bet, cap_id: ID) {
+    if (!self.revoked_participant_caps.contains(&cap_id)) {
+        self.revoked_participant_caps.insert(cap_id);
+    };
+}
+
 /// Force dissolve an expired bet (package-level, used by terminal)
 public(package) fun force_dissolve(self: &mut Bet, ctx: &TxContext) {
     assert!(self.status == STATUS_LOCKED, EBetNotOpen);
@@ -477,6 +498,7 @@ public fun participant_cap_bet_id(cap: &ParticipantCap): ID { cap.bet_id }
 public fun participant_cap_participant(cap: &ParticipantCap): address { cap.participant }
 public fun is_creator_cap_revoked(self: &Bet, cap_id: ID): bool { self.revoked_creator_caps.contains(&cap_id) }
 public fun is_participant_revoked(self: &Bet, addr: address): bool { self.revoked_participants.contains(&addr) }
+public fun is_participant_cap_revoked(self: &Bet, cap_id: ID): bool { self.revoked_participant_caps.contains(&cap_id) }
 
 // === Status Constants ===
 

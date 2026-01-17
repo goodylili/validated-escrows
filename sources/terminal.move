@@ -1,4 +1,3 @@
-/// Terminal module - Public API coordinating bets, vaults, and polls.
 module terminal::terminal;
 
 use std::string::String;
@@ -102,6 +101,7 @@ public fun create_bet(
 }
 
 /// Join a bet and deposit funds
+/// SECURITY FIX: Added validation for bet/vault/poll linkage
 public fun join_bet<T>(
     bet: &mut Bet,
     vault: &mut Vault,
@@ -109,16 +109,20 @@ public fun join_bet<T>(
     coin: Coin<T>,
     ctx: &mut TxContext,
 ): ParticipantCap {
+    // SECURITY FIX: Validate bet, vault, and poll are properly linked
+    assert!(bet::vault_id(bet) == vault::id(vault), EBetVaultMismatch);
+    assert!(bet::poll_id(bet) == poll::id(poll), EBetPollMismatch);
+
     // Join bet
     let cap = bet.join(ctx);
     let participant = bet::get_participant_address(&cap);
-    
+
     // Register as vault participant so they can deposit
     vault.add_participant(participant, ctx);
-    
+
     // Deposit to vault
     vault.deposit(coin, ctx);
-    
+
     // Update poll required participants
     poll.set_required_participants(bet::participant_count(bet), ctx);
 
@@ -126,6 +130,7 @@ public fun join_bet<T>(
 }
 
 /// Leave a bet and claim refund
+/// SECURITY FIX: Added validation for bet/vault/poll linkage and cap validity
 public fun leave_bet<T>(
     bet: &mut Bet,
     vault: &mut Vault,
@@ -134,10 +139,19 @@ public fun leave_bet<T>(
     ctx: &mut TxContext,
 ): (Coin<T>, Option<ParticipantCap>) {
     let participant = bet::participant_cap_participant(&cap);
-    
-    // Withdraw deposit from vault (removes form registry)
+    let cap_bet_id = bet::participant_cap_bet_id(&cap);
+
+    // SECURITY FIX: Validate cap belongs to this bet
+    assert!(cap_bet_id == bet::id(bet), ENotAuthorized);
+    // SECURITY FIX: Validate bet, vault, and poll are linked
+    assert!(bet::vault_id(bet) == vault::id(vault), EBetVaultMismatch);
+    assert!(bet::poll_id(bet) == poll::id(poll), EBetPollMismatch);
+    // SECURITY FIX: Check cap is not revoked
+    assert!(!bet::is_participant_cap_revoked(bet, object::id(&cap)), ERevokedCap);
+
+    // Withdraw deposit from vault (removes from registry)
     let refund = vault.withdraw_deposit<T>(participant, ctx);
-    
+
     // Check if user has other deposits
     if (vault.deposit_count_for_user(participant) > 0) {
         // User still has active deposits, do not remove from bet/vault participants
@@ -145,33 +159,45 @@ public fun leave_bet<T>(
         (refund, option::some(cap))
     } else {
         // User has no more deposits, remove completely
-        
+
         // Leave bet
         bet.leave(cap, ctx);
-        
+
         // Remove from vault participants
         vault.remove_participant(participant);
-        
+
         // Update poll required participants
         // Note: bet.leave already decremented participant count in bet
         poll.set_required_participants(bet::participant_count(bet), ctx);
-        
+
         (refund, option::none())
     }
 }
 
-/// Revoke a participant's ability to get re-issued caps (Soft Ban - prevents re-entry)
+/// Revoke a participant's ability to get re-issued caps (Soft Ban - prevents re-entry and winning)
+/// Also revokes their ParticipantCap if provided
 public fun revoke_participant(
     bet: &mut Bet,
+    vault: &mut Vault,
     cap: &CreatorCap,
     participant: address,
+    participant_cap_id: Option<ID>,
     ctx: &TxContext,
 ) {
     assert!(bet::cap_bet_id(cap) == bet::id(bet), ENotAuthorized);
     assert!(!bet::is_creator_cap_revoked(bet, object::id(cap)), ERevokedCap);
     assert!(bet::is_participant(bet, bet::cap_issued_to(cap)), ENotParticipant);
+    // SECURITY FIX: Validate bet and vault are linked
+    assert!(bet::vault_id(bet) == vault::id(vault), EBetVaultMismatch);
 
     bet.revoke_participant(participant, ctx);
+    // SECURITY FIX: Also revoke in vault to prevent being set as winner
+    vault.revoke_participant(participant);
+
+    // SECURITY FIX: Revoke the participant's cap if ID is provided
+    if (participant_cap_id.is_some()) {
+        bet.revoke_participant_cap(*participant_cap_id.borrow());
+    };
 }
 
 /// Deposit additional funds to vault
@@ -296,6 +322,7 @@ public fun claim_nft_refund<T: key + store>(
 }
 
 /// Resolve bet after poll is resolved (validates bet/poll/vault linkage)
+/// SECURITY FIX: Added validation that poll outcome is present
 public fun resolve_bet(
     bet: &mut Bet,
     poll: &Poll,
@@ -307,14 +334,22 @@ public fun resolve_bet(
     assert!(bet::poll_id(bet) == poll::id(poll), EBetPollMismatch);
     assert!(bet::vault_id(bet) == vault::id(vault), EBetVaultMismatch);
     assert!(poll.is_resolved(), EPollNotResolved);
-    
-    let winner = *poll.outcome().borrow();
+
+    // SECURITY FIX: Validate that outcome is present before borrowing
+    let outcome = poll.outcome();
+    assert!(outcome.is_some(), EPollNotResolved);
+
+    let winner = *outcome.borrow();
+
+    // SECURITY FIX: Validate winner is a participant in the bet
+    assert!(bet::is_participant(bet, winner), ENotParticipant);
 
     bet.resolve(winner, ctx);
     vault.set_resolved(vault_cap, winner, ctx);
 }
 
 /// Force dissolve an expired locked bet (anyone can call after expiry)
+/// SECURITY FIX: Added bet/vault linkage validation
 public fun force_dissolve_expired(
     bet: &mut Bet,
     vault: &mut Vault,
@@ -323,17 +358,22 @@ public fun force_dissolve_expired(
 ) {
     let now = ctx.epoch_timestamp_ms();
     let expiry = bet::expiry(bet);
-    
+
+    // SECURITY FIX: Validate bet and vault are linked
+    assert!(bet::vault_id(bet) == vault::id(vault), EBetVaultMismatch);
+    // SECURITY FIX: Validate vault_cap belongs to this vault
+    assert!(vault::cap_vault_id(vault_cap) == vault::id(vault), ENotAuthorized);
+
     assert!(now >= expiry, ENotExpired);
     assert!(bet::is_locked(bet), EBetNotLocked);
-    
+
     // Force resolve the poll as dissolved
     // Note: bet.dissolve requires CreatorCap, so we use a package-level approach
     // We update both bet status and vault status
-    
+
     bet.force_dissolve(ctx);
     vault.set_disbursed(vault_cap, ctx);
-    
+
     event::emit(BetForceDissolvedExpired {
         bet_id: bet::id(bet),
         vault_id: vault::id(vault),
